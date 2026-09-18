@@ -1,0 +1,25 @@
+node_modules/
+.next/
+out/
+build/
+next-env.d.ts
+
+# Data toko — JANGAN pernah masuk version control
+data/
+backups/
+
+# Env
+.env
+.env.local
+.env.production
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test & cache
+coverage/
+*.tsbuildinfo
+.eslintcache
