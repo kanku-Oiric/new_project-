@@ -1,0 +1,402 @@
+// Skema database Sistem Kasir Toko.
+// Referensi lengkap beserta alasan tiap keputusan: docs/database.md
+//
+// Catatan penting:
+//  - SQLite + Prisma TIDAK mendukung `enum`. Semua status adalah String, dengan
+//    Zod enum di src/lib/enums.ts sebagai satu-satunya sumber kebenaran.
+//  - Semua nominal rupiah adalah Int (rupiah penuh). Tidak ada Float/Decimal.
+//  - Nama TABEL di-map ke snake_case; nama KOLOM dibiarkan camelCase supaya raw
+//    SQL (pengurangan stok atomic) bisa ditulis apa adanya tanpa tebak-tebakan.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── AUTH & USER ───────────────────────────────
+
+model User {
+  id             String    @id @default(uuid())
+  name           String
+  role           String // "OWNER" | "CASHIER"
+  pinHash        String
+  active         Boolean   @default(true)
+  mustChangePin  Boolean   @default(false)
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  sessions     Session[]
+  shifts       Shift[]
+  transactions Transaction[]
+
+  @@index([active])
+  @@map("users")
+}
+
+model Session {
+  id          String   @id // sha256(token) — token asli hanya ada di cookie
+  userId      String
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+  lastSeenAt  DateTime @default(now())
+  deviceLabel String?
+  ip          String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ─────────────────────────────── SETTINGS ───────────────────────────────
+
+model Setting {
+  key             String   @id
+  value           String // selalu string; di-parse per key lewat Zod
+  updatedAt       DateTime @updatedAt
+  updatedByUserId String?
+
+  @@map("settings")
+}
+
+// ─────────────────────────────── PRODUK & STOK ───────────────────────────────
+
+model Product {
+  id          String   @id @default(uuid())
+  sku         String   @unique
+  barcode     String?  @unique // nullable; SQLite izinkan banyak NULL di unique
+  nama        String
+  searchKey   String // lowercase(nama + ' ' + sku + ' ' + barcode)
+  kategori    String
+  hargaBeli   Int // HPP saat ini, rupiah
+  hargaJual   Int // rupiah
+  stok        Int      @default(0)
+  stokMinimum Int      @default(0)
+  satuan      String   @default("pcs")
+  aktif       Boolean  @default(true)
+  gambarPath  String? // relatif terhadap data/uploads/
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  transactionItems TransactionItem[]
+  stockMovements   StockMovement[]
+
+  @@index([searchKey])
+  @@index([kategori])
+  @@index([aktif])
+  @@index([barcode])
+  @@map("products")
+}
+
+model StockMovement {
+  id           String   @id @default(uuid())
+  productId    String
+  qtyChange    Int // BERTANDA: negatif = keluar, positif = masuk
+  reason       String // "SALE"|"REFUND"|"VOID"|"PURCHASE"|"ADJUSTMENT"|"OPNAME"|"INITIAL"
+  stockBefore  Int
+  stockAfter   Int
+  refType      String? // "TRANSACTION"|"REFUND"|"PURCHASE"|"MANUAL"
+  refId        String?
+  userId       String
+  note         String?
+  businessDate String
+  createdAt    DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([productId, createdAt])
+  @@index([businessDate])
+  @@index([reason])
+  @@index([refType, refId])
+  @@map("stock_movements")
+}
+
+// ─────────────────────────────── SHIFT ───────────────────────────────
+
+model Shift {
+  id             String    @id @default(uuid())
+  cashierId      String
+  status         String // "OPEN" | "CLOSED"
+  openKey        String?   @unique // = cashierId saat OPEN, null saat CLOSED
+  openedAt       DateTime  @default(now())
+  closedAt       DateTime?
+  openingCash    Int
+  countedCash    Int?
+  expectedCash   Int?
+  difference     Int? // countedCash - expectedCash
+  businessDate   String
+  notes          String?
+  closedByUserId String?
+
+  cashier      User          @relation(fields: [cashierId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+  refunds      Refund[]
+  expenses     Expense[]
+
+  @@index([cashierId, status])
+  @@index([businessDate])
+  @@index([status])
+  @@map("shifts")
+}
+
+// ─────────────────────────────── TRANSAKSI ───────────────────────────────
+
+model Transaction {
+  id           String @id @default(uuid())
+  trxNumber    String @unique // "TRX-20260918-000123"
+  businessDate String
+  shiftId      String
+  cashierId    String
+  status       String // "PENDING"|"COMPLETED"|"VOIDED"|"CANCELLED"
+
+  grossSubtotal       Int // Σ (unitPrice × qty), sebelum diskon apa pun
+  itemDiscountTotal   Int // Σ itemDiscount
+  transactionDiscount Int // diskon level transaksi (rupiah)
+  netTotal            Int // grossSubtotal − itemDiscountTotal − transactionDiscount
+  cogsTotal           Int // Σ (unitCost × qty)
+
+  note           String?
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+  voidedAt       DateTime?
+  voidedByUserId String?
+  voidReason     String?
+  cancelReason   String? // diisi saat auto-cancel di penutupan shift
+
+  shift    Shift             @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  cashier  User              @relation(fields: [cashierId], references: [id], onDelete: Restrict)
+  items    TransactionItem[]
+  payments Payment[]
+  refunds  Refund[]
+
+  @@index([businessDate, status])
+  @@index([shiftId])
+  @@index([createdAt])
+  @@index([status])
+  @@map("transactions")
+}
+
+model TransactionItem {
+  id            String @id @default(uuid())
+  transactionId String
+  productId     String
+
+  // ── SNAPSHOT saat penjualan — tidak boleh berubah walau produk diubah besok ──
+  productName String
+  sku         String
+  unitPrice   Int // = hargaJual saat jual
+  unitCost    Int // = hargaBeli saat jual (dasar HPP)
+
+  qty                 Int
+  lineGross           Int // unitPrice × qty
+  itemDiscount        Int @default(0)
+  allocatedTxDiscount Int @default(0) // bagian transactionDiscount (largest remainder)
+  lineNet             Int // lineGross − itemDiscount
+  lineFinal           Int // lineNet − allocatedTxDiscount — DASAR NOMINAL REFUND
+  refundedQty         Int @default(0) // akumulatif, guard refund berlebih
+  refundedAmount      Int @default(0) // akumulatif, dasar rumus refund teleskopik
+
+  transaction Transaction  @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  refundItems RefundItem[]
+
+  @@index([transactionId])
+  @@index([productId])
+  @@map("transaction_items")
+}
+
+model Payment {
+  id                String    @id @default(uuid())
+  transactionId     String
+  method            String // "CASH" | "QRIS_STATIC"
+  status            String // "PENDING"|"PAID"|"EXPIRED"|"CANCELLED"|"FAILED"
+  amount            Int // nominal yang harus dibayar
+  amountTendered    Int? // uang diserahkan (tunai)
+  changeAmount      Int? // kembalian
+  providerName      String // "cash" | "qris-static" | nanti "midtrans" dst
+  externalId        String?
+  qrRef             String?
+  failureReason     String?
+  createdAt         DateTime  @default(now())
+  paidAt            DateTime?
+  confirmedByUserId String?
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+  @@index([status])
+  @@index([externalId])
+  @@map("payments")
+}
+
+// ─────────────────────────────── REFUND ───────────────────────────────
+
+model Refund {
+  id                 String   @id @default(uuid())
+  refundNumber       String   @unique // "RFN-20260918-000045"
+  transactionId      String
+  shiftId            String // shift tempat REFUND terjadi, bukan shift penjualan asal
+  businessDate       String // tanggal refund
+  amount             Int // Σ RefundItem.amount
+  cogsAmount         Int // Σ RefundItem.cogsAmount
+  method             String // "CASH"|"QRIS_MANUAL"|"OTHER"
+  reason             String
+  authorizedByUserId String // owner yang memberi PIN
+  createdByUserId    String // kasir yang menjalankan
+  createdAt          DateTime @default(now())
+
+  transaction Transaction  @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  shift       Shift        @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  items       RefundItem[]
+
+  @@index([transactionId])
+  @@index([shiftId])
+  @@index([businessDate])
+  @@map("refunds")
+}
+
+model RefundItem {
+  id                String @id @default(uuid())
+  refundId          String
+  transactionItemId String
+  qty               Int
+  amount            Int // proporsional terhadap lineFinal (rumus teleskopik)
+  cogsAmount        Int // unitCost × qty
+
+  refund          Refund          @relation(fields: [refundId], references: [id], onDelete: Cascade)
+  transactionItem TransactionItem @relation(fields: [transactionItemId], references: [id], onDelete: Restrict)
+
+  @@index([refundId])
+  @@index([transactionItemId])
+  @@map("refund_items")
+}
+
+// ─────────────────────────────── PENGELUARAN ───────────────────────────────
+
+model Expense {
+  id              String    @id @default(uuid())
+  shiftId         String
+  businessDate    String
+  kategori        String
+  amount          Int
+  note            String?
+  paidFrom        String    @default("CASH_DRAWER") // "CASH_DRAWER" | "OTHER"
+  createdByUserId String
+  createdAt       DateTime  @default(now())
+  deletedAt       DateTime? // soft delete
+  deletedByUserId String?
+
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+
+  @@index([shiftId])
+  @@index([businessDate])
+  @@index([deletedAt])
+  @@map("expenses")
+}
+
+// ─────────────────────────────── AUDIT ───────────────────────────────
+
+/// Append-only secara desain: tidak ada endpoint UPDATE maupun DELETE.
+/// Sengaja TANPA foreign key ke tabel lain — catatan audit yang gagal ditulis
+/// karena constraint lebih buruk daripada catatan yang id-nya tak bisa di-join.
+model AuditLog {
+  id          String   @id @default(uuid())
+  at          DateTime @default(now())
+  userId      String?
+  actorRole   String?
+  action      String
+  entityType  String?
+  entityId    String?
+  summary     String
+  beforeJson  String?
+  afterJson   String?
+  ip          String?
+  deviceLabel String?
+
+  @@index([at])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────── OPERASIONAL ───────────────────────────────
+
+model DailyCounter {
+  scope   String @id // "TRX-20260918" | "RFN-20260918"
+  lastSeq Int    @default(0)
+
+  @@map("daily_counters")
+}
+
+model ReportDelivery {
+  id                String    @id @default(uuid())
+  kind              String // "DAILY"|"WEEKLY"|"MONTHLY"
+  periodKey         String // "2026-09-18" | "2026-W38" | "2026-09"
+  channel           String // "DISCORD"|"TELEGRAM"
+  trigger           String // "AUTO" (cron/catch-up) | "MANUAL" (tombol)
+  status            String // "PENDING"|"SENT"|"FAILED"
+  attempts          Int       @default(0)
+  lastError         String?
+  nextAttemptAt     DateTime?
+  createdAt         DateTime  @default(now())
+  sentAt            DateTime?
+  requestedByUserId String? // hanya untuk trigger MANUAL
+
+  /// "kind|periodKey|channel" saat trigger=AUTO, null saat trigger=MANUAL.
+  /// Unique atas kolom nullable = AUTO terdedup, MANUAL boleh berulang.
+  dedupeKey String? @unique
+
+  @@index([status, nextAttemptAt])
+  @@index([kind, periodKey, channel, trigger])
+  @@index([trigger, status])
+  @@map("report_deliveries")
+}
+
+model AiCallLog {
+  id           String   @id @default(uuid())
+  at           DateTime @default(now())
+  businessDate String // untuk penegakan batas 1×/hari
+  kind         String // "WEEKLY"|"MONTHLY"
+  periodKey    String
+  ok           Boolean
+  model        String?
+  errorMessage String?
+
+  @@index([businessDate])
+  @@map("ai_call_logs")
+}
+
+/// Teks saran AI yang tersimpan, supaya bisa dibaca ulang tanpa memanggil API
+/// lagi. TIDAK punya relasi tulis ke tabel bisnis mana pun, dan tidak satu pun
+/// kolomnya dipakai dalam perhitungan penjualan, stok, kas, atau laporan.
+/// Append-only: analisis ulang membuat baris baru, tidak pernah UPDATE.
+model AiInsight {
+  id                String   @id @default(uuid())
+  kind              String // "WEEKLY"|"MONTHLY"
+  periodKey         String
+  model             String
+  insightJson       String // hasil yang SUDAH lolos validasi Zod
+  createdAt         DateTime @default(now())
+  requestedByUserId String?
+
+  @@index([kind, periodKey, createdAt])
+  @@index([createdAt])
+  @@map("ai_insights")
+}
+
+model StartupLock {
+  id        String   @id // "catchup" | "backup"
+  holder    String // pid/uuid proses
+  heldAt    DateTime
+  expiresAt DateTime
+
+  @@map("startup_locks")
+}

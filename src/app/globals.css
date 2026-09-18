@@ -1,0 +1,59 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-kasir-bg: #f4f5f7;
+  --color-kasir-surface: #ffffff;
+  --color-kasir-border: #d8dce3;
+  --color-kasir-text: #16181d;
+  --color-kasir-muted: #5d6470;
+  --color-kasir-accent: #14683f;
+  --color-kasir-accent-strong: #0f5432;
+  --color-kasir-danger: #b3261e;
+  --color-kasir-warning: #8a5a00;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-kasir-bg);
+  color: var(--color-kasir-text);
+  -webkit-text-size-adjust: 100%;
+}
+
+/*
+ * Layar kasir dipakai di tablet dan HP dengan jari, sering sambil terburu-buru.
+ * Target sentuh minimal 44px ditegakkan di sini supaya tidak perlu diingat
+ * satu per satu di setiap komponen.
+ */
+button,
+[role='button'],
+input,
+select {
+  min-height: 44px;
+}
+
+/* Matikan zoom otomatis iOS saat fokus input — ukuran font < 16px memicunya. */
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+
+/* Kasir memakai tombol angka bertubi-tubi; seleksi teks tidak sengaja mengganggu. */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
