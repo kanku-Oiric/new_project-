@@ -3,21 +3,31 @@
  *
  * LOKASI FILE INI PENTING: project memakai folder `src/`, dan Next.js mencari
  * `instrumentation.ts` di dalam `src/` — bukan di root. Menaruhnya di root
- * membuat `register()` tidak pernah dipanggil, tanpa error apa pun, sehingga
- * backup dan (nanti) catch-up laporan diam-diam tidak jalan.
+ * membuat `register()` tidak pernah dipanggil, tanpa error apa pun.
  *
- * `register()` adalah satu-satunya titik "on server start" resmi di Next.js,
- * dan berjalan baik di `next dev` maupun `next start`. Inilah sebabnya catch-up
- * laporan (Fase 6) bisa menjadi mekanisme utama, bukan cron — laptop toko
- * dimatikan tiap malam, jadi cron pasti melewatkan laporan.
+ * BENTUK GUARD-NYA JUGA PENTING. Next.js mengompilasi file ini untuk runtime
+ * Node DAN runtime edge. Webpack mengganti `process.env.NEXT_RUNTIME` dengan
+ * literal lalu membuang cabang yang mati — tapi itu hanya bekerja andal untuk
+ * blok `if` yang tidak terambil. Bentuk sebelumnya:
+ *
+ *     if (process.env.NEXT_RUNTIME !== 'nodejs') return
+ *     const { runStartupTasksOnce } = await import('./lib/startup')
+ *
+ * tidak dieliminasi: webpack tetap menelusuri import itu untuk build edge, lalu
+ * gagal meresolusi `node:fs`, `node:crypto`, dan `crypto` milik bcryptjs. Yang
+ * rusak bukan cuma startup — SELURUH module graph dev server ikut gagal, dan
+ * setiap route mengembalikan 500, termasuk yang sama sekali tidak memakai
+ * startup.
+ *
+ * Meletakkan import di dalam `if` positif adalah pola yang didokumentasikan
+ * Next.js, dan membuat seluruh subtree Node-only benar-benar terbuang dari
+ * build edge.
  *
  * docs/architecture.md §10.1
  */
 export async function register(): Promise<void> {
-  // Runtime edge tidak punya akses filesystem maupun SQLite.
-  if (process.env.NEXT_RUNTIME !== 'nodejs') return
-
-  // Import dinamis supaya modul Node-only tidak ikut ter-bundle ke runtime lain.
-  const { runStartupTasksOnce } = await import('./lib/startup')
-  await runStartupTasksOnce()
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    const { runStartupTasksOnce } = await import('./lib/startup')
+    await runStartupTasksOnce()
+  }
 }

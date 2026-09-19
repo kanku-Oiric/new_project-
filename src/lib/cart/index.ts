@@ -1,3 +1,4 @@
+import { AppError } from '../errors'
 import { MoneyError, assertRupiah } from '../money'
 
 /**
@@ -10,7 +11,19 @@ import { MoneyError, assertRupiah } from '../money'
  * menentukan produk mana, berapa banyak, dan berapa diskonnya.
  */
 
+/** Masukan keranjang yang tidak sah — 400, bisa dibetulkan kasir. */
 export class CartError extends MoneyError {}
+
+/**
+ * Pelanggaran invariant alokasi diskon — 500, karena ini BUG KODE, bukan
+ * kesalahan kasir. Dibedakan dengan sengaja: menjawab 400 untuk kerusakan
+ * internal akan menyuruh kasir membetulkan sesuatu yang tidak bisa ia betulkan.
+ */
+export class CartIntegrityError extends AppError {
+  constructor(message: string) {
+    super('INTERNAL', 500, message)
+  }
+}
 
 /** Yang boleh ditentukan client. */
 export interface CartLineInput {
@@ -205,7 +218,7 @@ export function computeCartDisplay(
   // supaya ketidakcocokan tidak pernah sampai tertulis ke database.
   const sumLineFinal = computed.reduce((a, l) => a + l.lineFinal, 0)
   if (sumLineFinal !== netTotal) {
-    throw new CartError(
+    throw new CartIntegrityError(
       `Σ lineFinal (${sumLineFinal}) tidak sama dengan netTotal (${netTotal}) — alokasi diskon rusak`,
     )
   }

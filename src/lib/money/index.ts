@@ -1,3 +1,5 @@
+import { AppError } from '../errors'
+
 /**
  * Semua nominal rupiah adalah INTEGER RUPIAH PENUH. Rupiah tidak punya sen,
  * jadi tidak ada alasan memakai pecahan. Format hanya terjadi di layer tampilan
@@ -9,7 +11,24 @@
 /** Batas atas kolom Int 32-bit Prisma: Rp 2.147.483.647 per kolom nominal. */
 export const MAX_RUPIAH_COLUMN = 2_147_483_647
 
-export class MoneyError extends Error {}
+/**
+ * Kesalahan aturan uang.
+ *
+ * Mewarisi `AppError` dengan status 400, BUKAN `Error` biasa. Semua pelanggaran
+ * di sini berasal dari masukan kasir — uang kurang, diskon melebihi subtotal,
+ * qty nol — jadi jawabannya harus 4xx dengan pesan yang bisa ditindaklanjuti.
+ *
+ * Sebelumnya ini `Error` polos, sehingga `handleApiError` menganggapnya
+ * kegagalan tak terduga dan menjawab 500 "Terjadi kesalahan di server". Kasir
+ * yang kurang uang kembalian jadi membaca pesan yang salah, dan sejak UI
+ * membedakan 5xx dari 4xx, 500 itu bahkan menyuruhnya JANGAN mengulang
+ * transaksi — nasihat yang keliru untuk masalah yang tinggal dibetulkan.
+ */
+export class MoneyError extends AppError {
+  constructor(message: string, details?: unknown) {
+    super('VALIDATION', 400, message, details)
+  }
+}
 
 /**
  * Menjaga agar nilai yang masuk ke DB benar-benar integer non-negatif dan

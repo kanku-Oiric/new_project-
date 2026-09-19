@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getJson, outcomeMessage, postJson } from '@/lib/api-client'
 import { computeCartDisplay, type CartDisplayTotals } from '@/lib/cart'
 import type { PaymentMethod } from '@/lib/enums'
 import { CartPanel } from '@/components/kasir/cart-panel'
@@ -20,18 +21,6 @@ interface LastSale {
   transactionId: string
   changeAmount: number | null
   negativeStock: { productName: string; stockAfter: number }[]
-}
-
-function errorMessageOf(data: unknown, fallback: string): string {
-  if (
-    typeof data === 'object' &&
-    data !== null &&
-    'error' in data &&
-    typeof (data as { error?: { message?: unknown } }).error?.message === 'string'
-  ) {
-    return (data as { error: { message: string } }).error.message
-  }
-  return fallback
 }
 
 export function KasirClient({
@@ -61,22 +50,19 @@ export function KasirClient({
   const search = useCallback(async (query: string, kategori: string | null) => {
     const seq = ++searchSeq.current
     setLoading(true)
-    try {
-      const params = new URLSearchParams()
-      if (query.trim()) params.set('q', query.trim())
-      if (kategori) params.set('kategori', kategori)
-      const res = await fetch(`/api/products?${params.toString()}`)
-      if (!res.ok) return
-      const data: unknown = await res.json()
-      if (seq !== searchSeq.current) return
-      if (typeof data === 'object' && data !== null && 'products' in data) {
-        setProducts((data as { products: KasirProduct[] }).products)
-      }
-    } catch {
-      setBanner('Tidak bisa memuat produk. Periksa koneksi ke komputer kasir.')
-    } finally {
-      if (seq === searchSeq.current) setLoading(false)
+    const params = new URLSearchParams()
+    if (query.trim()) params.set('q', query.trim())
+    if (kategori) params.set('kategori', kategori)
+
+    const outcome = await getJson<{ products: KasirProduct[] }>(`/api/products?${params}`)
+    if (seq !== searchSeq.current) return
+
+    if (outcome.kind === 'ok') {
+      setProducts(outcome.data.products)
+    } else {
+      setBanner(outcomeMessage(outcome, false))
     }
+    setLoading(false)
   }, [])
 
   const addToCart = useCallback((product: KasirProduct, qty = 1) => {
@@ -106,19 +92,14 @@ export function KasirClient({
   /** Scanner barcode: kecocokan TEPAT, satu hasil, langsung masuk keranjang. */
   const handleScan = useCallback(
     async (code: string) => {
-      try {
-        const res = await fetch(`/api/products/lookup?barcode=${encodeURIComponent(code)}`)
-        const data: unknown = await res.json()
-        if (!res.ok) {
-          setBanner(errorMessageOf(data, `Barcode tidak dikenal: ${code}`))
-          return
-        }
-        if (typeof data === 'object' && data !== null && 'product' in data) {
-          addToCart((data as { product: KasirProduct }).product)
-        }
-      } catch {
-        setBanner('Tidak bisa menghubungi server saat scan.')
+      const outcome = await getJson<{ product: KasirProduct }>(
+        `/api/products/lookup?barcode=${encodeURIComponent(code)}`,
+      )
+      if (outcome.kind === 'ok') {
+        addToCart(outcome.data.product)
+        return
       }
+      setBanner(outcomeMessage(outcome, false))
     },
     [addToCart],
   )
@@ -180,51 +161,42 @@ export function KasirClient({
       if (!totals) return
       setBusy(true)
       setPayError(null)
-      try {
-        const res = await fetch('/api/transactions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            lines: items.map((i) => ({
-              productId: i.productId,
-              qty: i.qty,
-              itemDiscount: i.itemDiscount,
-            })),
-            transactionDiscount,
-            method,
-            amountTendered,
-          }),
-        })
-        const data: unknown = await res.json()
 
-        if (!res.ok) {
-          setPayError(errorMessageOf(data, 'Pembayaran gagal'))
-          return
-        }
+      const outcome = await postJson<CheckoutResponse>('/api/transactions', {
+        lines: items.map((i) => ({
+          productId: i.productId,
+          qty: i.qty,
+          itemDiscount: i.itemDiscount,
+        })),
+        transactionDiscount,
+        method,
+        amountTendered,
+      })
 
-        const result = data as CheckoutResponse
-        setLastSale({
-          trxNumber: result.trxNumber,
-          transactionId: result.transactionId,
-          changeAmount: result.changeAmount,
-          negativeStock: result.negativeStock ?? [],
-        })
-
-        // Kembali ke keranjang kosong untuk transaksi berikutnya.
-        setItems([])
-        setTransactionDiscount(0)
-        setPaying(false)
-        void search('', null)
-      } catch {
-        // Kegagalan jaringan setelah request terkirim itu ambigu: transaksi
-        // mungkin sudah tersimpan. Jangan pernah menyuruh kasir mengulang —
-        // mengulang bisa berarti pelanggan terbayar dua kali.
-        setPayError(
-          'Koneksi terputus saat memproses. JANGAN ulangi pembayaran — periksa dulu di riwayat transaksi apakah transaksi ini sudah tersimpan.',
-        )
-      } finally {
+      if (outcome.kind !== 'ok') {
+        // Pesannya dibedakan per keadaan: 4xx aman diperbaiki lalu diulang,
+        // sedangkan 5xx dan kegagalan jaringan TIDAK — pada keduanya transaksi
+        // mungkin sudah tersimpan, dan mengulang bisa berarti pelanggan
+        // terbayar dua kali.
+        setPayError(outcomeMessage(outcome, true))
         setBusy(false)
+        return
       }
+
+      const result = outcome.data
+      setLastSale({
+        trxNumber: result.trxNumber,
+        transactionId: result.transactionId,
+        changeAmount: result.changeAmount,
+        negativeStock: result.negativeStock ?? [],
+      })
+
+      // Kembali ke keranjang kosong untuk transaksi berikutnya.
+      setItems([])
+      setTransactionDiscount(0)
+      setPaying(false)
+      setBusy(false)
+      void search('', null)
     },
     [items, totals, transactionDiscount, search],
   )

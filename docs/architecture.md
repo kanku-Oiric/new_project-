@@ -445,6 +445,32 @@ runStartupTasks():
 ```
 Seluruhnya dibungkus try/catch: **kegagalan apa pun di sini tidak boleh membuat server gagal boot.** Toko harus bisa jualan walaupun backup gagal dan Discord mati.
 
+#### Dua aturan yang tidak boleh dilanggar di file ini
+
+Keduanya pernah dilanggar dan keduanya menimbulkan kerusakan senyap — lolos test, typecheck, lint, dan build, lalu gagal di runtime.
+
+**1. File-nya harus di `src/instrumentation.ts`, bukan di root.** Project ini memakai folder `src/`, dan Next.js hanya mencarinya di sana. Di root, `register()` tidak pernah dipanggil, tanpa error apa pun — backup diam-diam tidak jalan.
+
+**2. Import Node-only harus di dalam blok `if` positif.**
+
+```ts
+// BENAR — subtree Node-only benar-benar terbuang dari build non-Node
+if (process.env.NEXT_RUNTIME === 'nodejs') {
+  const { runStartupTasksOnce } = await import('./lib/startup')
+  await runStartupTasksOnce()
+}
+
+// SALAH — webpack tetap menelusuri import ini
+if (process.env.NEXT_RUNTIME !== 'nodejs') return
+const { runStartupTasksOnce } = await import('./lib/startup')
+```
+
+Next.js mengompilasi file ini untuk runtime Node **dan** non-Node. Webpack mengganti `process.env.NEXT_RUNTIME` dengan literal lalu membuang cabang mati, tapi itu hanya bekerja andal untuk blok `if` yang tidak terambil — bukan untuk statement setelah `return`.
+
+Bentuk yang salah membuat webpack menelusuri seluruh graph dan gagal meresolusi `node:fs`, `node:crypto`, serta `crypto` milik bcryptjs. Akibatnya **bukan** cuma startup yang mati: seluruh module graph gagal dibangun dan **setiap route menjawab 500**, termasuk yang sama sekali tidak menyentuh modul bermasalah.
+
+**Turunannya:** apa pun yang bisa dijangkau dari `instrumentation.ts` harus bebas kriptografi. Karena itu `pruneExpiredSessions` dan `checkDatabase` tinggal di `src/lib/db/maintenance.ts` yang hanya berisi query Prisma polos — bukan di `auth/session.ts` yang menarik `bcryptjs` dan `node:crypto`.
+
 ### 10.2 `catchUpReports`
 1. Hitung `today` di WIB.
 2. Untuk setiap `kind` (DAILY/WEEKLY/MONTHLY) × `channel` yang terkonfigurasi: cari `periodKey` terakhir berstatus **`SENT`**. Kalau belum pernah, mulai dari `businessDate` transaksi paling awal (atau setting `installDate`).
@@ -703,6 +729,25 @@ Setiap fase berakhir dalam kondisi **bisa dijalankan**, dan wajib lulus `npm run
 | **6** | Agregasi harian/mingguan/bulanan murni + `/laporan`. Catch-up di `instrumentation.ts` + scheduler interval. Discord + Telegram + WhatsApp stub + backoff + `report_deliveries` idempotent (`trigger` AUTO/MANUAL). Kirim manual & retry. | **Test "server mati 3 hari" + test idempotensi lulus; kirim manual 2× tidak error** |
 | **7** | Mirror backup opsional. Tombol "Backup sekarang" & export CSV. Dashboard owner (termasuk daftar void yang butuh pengembalian manual). README lengkap: cara nyala, cari IP LAN, izin Windows Firewall, `start-toko.bat`, **cara restore untuk orang non-teknis**. | Prosedur restore dijalankan dari awal sampai akhir dan data kembali |
 | **8** | Gemini: batas 1×/hari, hanya mingguan/bulanan, payload agregat whitelisted, Zod, skip kalau invalid, simpan ke `ai_insights` (append-only), tombol "Minta analisis" + baca cache tanpa panggil API. | Lulus dengan `AI_ENABLED=false` dan dengan response invalid; insight tersimpan bisa dibaca ulang offline |
+
+---
+
+## 17a. Lapisan test, dan apa yang TIDAK bisa dilihat masing-masing
+
+Fase 2 lolos `test` + `typecheck` + `lint` + `build`, lalu setiap route menjawab 500 begitu server dijalankan. Bukan karena testnya kurang banyak, melainkan karena tidak satu pun dari keempatnya menyentuh lapisan yang rusak.
+
+| Lapisan | Yang diuji | Yang TIDAK bisa dilihat |
+|---|---|---|
+| **Unit** (`src/lib/**/*.test.ts`) | Matematika uang, waktu, state machine. Cepat, tanpa IO | Database, bundler, HTTP |
+| **Integrasi DB** (`tests/checkout.test.ts`, `tests/db-integrity.test.ts`) | Atomicity, race, rollback, constraint. Memanggil fungsi service langsung | **Bundler dan route handler** — kode bisa benar tapi tidak pernah bisa dimuat Next.js |
+| **HTTP** (`tests/api-http.test.ts`) | Server Next.js sungguhan: bundling, auth, Zod, status code, envelope error | Perilaku browser (klik, fokus, scanner) |
+| **Manual browser** | Interaksi kasir sungguhan | — |
+
+Lapisan HTTP adalah yang paling mahal dan paling sering dilewati, dan justru satu-satunya yang bisa melihat kegagalan bundling. `tests/api-http.test.ts` menjalankan `next dev` sungguhan terhadap SQLite sementara, lalu menembak request nyata.
+
+Test pertamanya sengaja hanya memeriksa `GET /api/health` menjawab 200. Terlihat sepele, tapi itulah kanarinya: saat module graph rusak, **semua** route menjawab 500 sekaligus, dan satu assertion itu langsung menangkapnya.
+
+**Aturan yang diambil dari kejadian ini:** setiap endpoint yang menyentuh uang wajib punya test di lapisan HTTP, bukan cukup di lapisan service.
 
 ---
 

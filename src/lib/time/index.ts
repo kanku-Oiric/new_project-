@@ -10,9 +10,16 @@
  *    ditulis.
  */
 
+import { AppError } from '../errors'
+
 export const DEFAULT_TIMEZONE = 'Asia/Jakarta'
 
-export class TimeError extends Error {}
+/** Tanggal/waktu yang tidak sah. Selalu berasal dari masukan, jadi 400. */
+export class TimeError extends AppError {
+  constructor(message: string) {
+    super('VALIDATION', 400, message)
+  }
+}
 
 /** "YYYY-MM-DD" dalam zona toko. */
 export type BusinessDate = string

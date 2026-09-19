@@ -1,7 +1,9 @@
 import { ok, route } from '@/lib/api'
 import { listBackups } from '@/lib/backup'
 import { config } from '@/lib/config'
-import { checkDatabase } from '@/lib/startup'
+// Dari db/maintenance, bukan dari startup: /api/health tidak perlu menarik
+// modul backup dan logger hanya untuk menjalankan satu SELECT 1.
+import { checkDatabase } from '@/lib/db/maintenance'
 import { toBusinessDate } from '@/lib/time'
 
 export const dynamic = 'force-dynamic'

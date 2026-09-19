@@ -1,9 +1,16 @@
 import 'server-only'
 import { runBackup } from './backup'
 import { config } from './config'
-import { applyPragmas, prisma } from './db/prisma'
-import { pruneExpiredSessions } from './auth/session'
+import { applyPragmas } from './db/prisma'
+import { checkDatabase, pruneExpiredSessions } from './db/maintenance'
 import { createLogger, pruneLogs } from './logger'
+
+/**
+ * ATURAN IMPOR FILE INI: apa pun yang diimpor di sini ikut ditelusuri webpack
+ * saat `instrumentation.ts` dikompilasi untuk runtime non-Node. Jangan pernah
+ * mengimpor modul dari `auth/` (bcryptjs, node:crypto) atau dependensi lain
+ * yang tidak bisa di-resolve di luar Node — lihat src/lib/db/maintenance.ts.
+ */
 
 const log = createLogger('startup')
 
@@ -95,12 +102,7 @@ export async function runStartupTasksOnce(): Promise<void> {
   }
 }
 
-/** Cek kesehatan untuk /api/health dan dashboard. */
-export async function checkDatabase(): Promise<{ ok: boolean; error: string | null }> {
-  try {
-    await prisma.$queryRawUnsafe('SELECT 1')
-    return { ok: true, error: null }
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
-  }
-}
+// `checkDatabase` dipindah ke src/lib/db/maintenance.ts supaya /api/health tidak
+// perlu mengimpor seluruh modul startup (backup, logger, node:fs) hanya untuk
+// menjalankan satu SELECT 1. Di-reexport di sini agar pemanggil lama tetap jalan.
+export { checkDatabase }

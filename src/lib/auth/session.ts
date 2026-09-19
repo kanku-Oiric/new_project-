@@ -132,8 +132,7 @@ export async function destroySession(): Promise<void> {
   store.delete(config.auth.sessionCookieName)
 }
 
-/** Bersihkan session kedaluwarsa. Dipanggil saat startup. */
-export async function pruneExpiredSessions(now: Date): Promise<number> {
-  const res = await prisma.session.deleteMany({ where: { expiresAt: { lt: now } } })
-  return res.count
-}
+// `pruneExpiredSessions` TIDAK ada di sini dengan sengaja — ia tinggal di
+// src/lib/db/maintenance.ts. File ini mengimpor `pin.ts` (bcryptjs, node:crypto),
+// dan startup yang memanggil prune dari sini akan menyeret keduanya ke dalam
+// graph yang dikompilasi untuk runtime non-Node, lalu mematikan seluruh server.
