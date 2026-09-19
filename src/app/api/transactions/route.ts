@@ -1,9 +1,10 @@
 import { z } from 'zod'
 import { clientIp, deviceLabel, ok, parseBody, route } from '@/lib/api'
 import { requireSession } from '@/lib/auth/session'
+import { ConflictError } from '@/lib/errors'
 import { checkout } from '@/lib/checkout'
 import { PaymentMethodSchema } from '@/lib/enums'
-import { ensureOpenShift } from '@/lib/shift/current'
+import { findOpenShift } from '@/lib/shift/service'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,15 +38,19 @@ const CheckoutSchema = z
 export const POST = route('transactions.create', async (req) => {
   const session = await requireSession()
 
-  // Scaffolding Fase 2: shift dibuka otomatis kalau belum ada. Fase 3 menggantinya
-  // dengan layar buka/tutup shift dan menolak checkout tanpa shift OPEN.
-  const shiftId = await ensureOpenShift(session.id)
+  // Tidak ada penjualan di luar shift. Sebelum Fase 3, shift dibuka otomatis
+  // dengan kas awal nol supaya Fase 2 bisa diuji — itu membuat rekonsiliasi kas
+  // tidak berarti apa-apa, jadi scaffolding-nya dihapus di sini.
+  const shift = await findOpenShift(session.id)
+  if (!shift) {
+    throw new ConflictError('Belum ada shift terbuka. Buka shift dulu sebelum bertransaksi.')
+  }
 
   const body = await parseBody(req, CheckoutSchema)
 
   const result = await checkout(body, {
     userId: session.id,
-    shiftId,
+    shiftId: shift.id,
     role: session.role,
     ip: clientIp(req),
     deviceLabel: deviceLabel(req),

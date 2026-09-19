@@ -215,6 +215,31 @@ describe('POST /api/transactions lewat HTTP', () => {
     expect(cookie).not.toBe('')
   }, 60_000)
 
+  it('checkout DITOLAK sebelum shift dibuka', async () => {
+    // Sejak Fase 3 tidak ada penjualan di luar shift. Sebelumnya shift dibuka
+    // otomatis dengan kas awal nol, yang membuat rekonsiliasi kas tak berarti.
+    const res = await fetch(`${baseUrl}/api/transactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({
+        lines: [{ productId, qty: 1, itemDiscount: 0 }],
+        transactionDiscount: 0,
+        method: 'CASH',
+        amountTendered: 10_000,
+      }),
+    })
+    expect(res.status).toBe(409)
+  }, 60_000)
+
+  it('buka shift sebelum bertransaksi', async () => {
+    const res = await fetch(`${baseUrl}/api/shifts/open`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ openingCash: 100_000 }),
+    })
+    expect(res.status).toBe(201)
+  }, 60_000)
+
   it('checkout tunai menjawab 201, transaksi tersimpan, stok berkurang', async () => {
     const before = await prisma.product.findUniqueOrThrow({ where: { id: productId } })
 

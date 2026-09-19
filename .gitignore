@@ -1,6 +1,7 @@
 node_modules/
 .next/
 .next-test/
+.next-e2e/
 out/
 build/
 next-env.d.ts
