@@ -117,9 +117,18 @@ beforeAll(async () => {
     [path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next'), 'dev', '-p', String(port)],
     {
       cwd: process.cwd(),
-      // DATABASE_URL di process.env menang atas .env — Next tidak menimpa
-      // variabel yang sudah ada.
-      env: { ...process.env, DATABASE_URL: dbUrl, NODE_ENV: 'development' },
+      env: {
+        ...process.env,
+        // DATABASE_URL di process.env menang atas .env — Next tidak menimpa
+        // variabel yang sudah ada.
+        DATABASE_URL: dbUrl,
+        NODE_ENV: 'development',
+        // Folder build terpisah. Tanpa ini, `next dev` milik test menulis ke
+        // `.next` yang sama dengan dev server yang mungkin sedang dipakai orang
+        // lain, lalu isinya tercampur dengan output `next build` dan halaman
+        // gagal dengan "Cannot find module './vendor-chunks/...'".
+        NEXT_DIST_DIR: '.next-test',
+      },
       stdio: 'pipe',
     },
   )

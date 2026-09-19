@@ -759,6 +759,28 @@ Test pertamanya sengaja hanya memeriksa `GET /api/health` menjawab 200. Terlihat
 - Windows Firewall akan bertanya saat pertama kali — harus **Allow** pada jaringan Private, kalau tidak device lain tidak bisa mengakses.
 - Cari IP LAN: `ipconfig` → `IPv4 Address` pada adapter WiFi. Kasir mengakses `http://<IP>:3000`.
 
+### 18.1 `Cannot find module './vendor-chunks/....js'`
+
+Gejalanya menyesatkan: sepertinya ada dependensi yang hilang, padahal `node_modules` baik-baik saja. Yang rusak adalah **folder build**.
+
+`next dev` dan `next build` sama-sama menulis ke `.next`, dan keduanya menghasilkan struktur chunk yang berbeda. Menjalankan `npm run build` saat `npm run dev` masih hidup membuat isinya tercampur: manifest dari dev menunjuk ke chunk yang hanya dibuat build, atau sebaliknya.
+
+Penanganannya:
+
+```bash
+npm run build
+```
+
+didahului menghentikan dev server, lalu hapus `.next` dan jalankan lagi:
+
+```bash
+rm -rf .next
+```
+
+**Aturan:** jangan menjalankan `build` saat `dev` berjalan, dan sebaliknya. Kalau terlanjur, hapus `.next` — tidak ada data toko di sana, isinya murni hasil kompilasi.
+
+`tests/api-http.test.ts` menjalankan `next dev` sungguhan, jadi ia memakai folder build sendiri lewat `NEXT_DIST_DIR=.next-test` dan **tidak pernah** merusak dev server yang sedang dipakai.
+
 ---
 
 ## 19. Batas yang diakui terbuka

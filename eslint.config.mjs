@@ -10,6 +10,8 @@ const config = [
   {
     ignores: [
       '.next/**',
+      // Folder build terpisah milik tests/api-http.test.ts (NEXT_DIST_DIR).
+      '.next-test/**',
       'node_modules/**',
       'data/**',
       'backups/**',
