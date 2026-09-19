@@ -1,5 +1,12 @@
 * text=auto eol=lf
 
+# Batch HARUS CRLF. cmd.exe salah membaca blok berkurung ( ... ) pada berkas
+# ber-LF, dan start-toko.bat justru penuh blok seperti itu — pemeriksaan node,
+# .env, dan pemilihan mode produksi/dev. Berkas ini adalah satu-satunya cara
+# pemilik toko menyalakan sistemnya; ia tidak boleh gagal karena akhir baris.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 *.png binary
 *.jpg binary
 *.ico binary
