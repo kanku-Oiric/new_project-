@@ -1,6 +1,6 @@
 # Database — Sistem Kasir Toko
 
-> Status: **Draft untuk review.** Pendamping `architecture.md`.
+> Status: **Terpasang.** Skema di dokumen ini sama dengan `prisma/schema.prisma` yang berjalan, termasuk kolom idempotency yang ditambahkan setelah Fase 6 (lihat `architecture.md` §20). Pendamping `architecture.md`.
 
 SQLite via Prisma, file `data/pos.db`. `DATABASE_URL="file:../data/pos.db"` (relatif terhadap folder `prisma/`).
 
@@ -218,6 +218,15 @@ model Transaction {
   voidedAt       DateTime?
   voidedByUserId String?
   voidReason     String?
+  cancelReason   String?                 // diisi saat auto-cancel di penutupan shift
+
+  // ── Kunci sekali-pakai (architecture.md §20) ──────────────────────────────
+  // Nullable + @unique: SQLite mengizinkan banyak NULL pada unique, jadi request
+  // tanpa kunci tetap sah — hanya tidak terlindungi dari pengulangan.
+  idempotencyKey         String? @unique
+  // Sidik jari isi keranjang. Kunci yang sama dengan isi berbeda DITOLAK 409,
+  // bukan dijawab dengan struk transaksi lain.
+  idempotencyFingerprint String?
 
   shift    Shift             @relation(fields: [shiftId], references: [id], onDelete: Restrict)
   cashier  User              @relation(fields: [cashierId], references: [id], onDelete: Restrict)
@@ -297,6 +306,11 @@ model Refund {
   authorizedByUserId String              // owner yang memberi PIN
   createdByUserId    String              // kasir yang menjalankan
   createdAt     DateTime @default(now())
+
+  // Refund SEBAGIAN yang diulang lolos guard kumulatif (1 dari 4, lalu 1 dari 4
+  // lagi = 2 terkembalikan). Kunci ini yang menahannya.
+  idempotencyKey         String? @unique
+  idempotencyFingerprint String?
 
   transaction Transaction  @relation(fields: [transactionId], references: [id], onDelete: Restrict)
   shift       Shift        @relation(fields: [shiftId], references: [id], onDelete: Restrict)

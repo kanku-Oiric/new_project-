@@ -1,6 +1,6 @@
 # Arsitektur — Sistem Kasir Toko
 
-> Status: **Draft untuk review.** Belum ada kode aplikasi. Dokumen ini + `database.md` + `reporting.md` + `qris.md` adalah deliverable Fase 0.
+> Status: **Fase 1–7 terpasang.** Dokumen ini menggambarkan kode yang benar-benar ada, bukan rencana — kecuali Fase 8 (Gemini) yang belum dikerjakan dan ditandai apa adanya di §12 dan §17. Batas yang diakui terbuka ada di §19; daftarnya dirawat, bukan dibiarkan basi. Pendamping `database.md`, `reporting.md`, `qris.md`, dan `README.md`.
 
 ---
 
@@ -589,8 +589,8 @@ Manifest + ikon + viewport + `display: standalone` → installable, bekerja baik
 | `/produk` | owner | List, CRUD |
 | `/produk/[id]` | owner | Edit, penyesuaian stok, riwayat stok |
 | `/laporan` | owner | Viewer harian/mingguan/bulanan + date picker |
-| `/dashboard` | owner | Ringkasan, status pengiriman, kirim manual, minta analisis |
-| `/pengaturan` | owner | Toko, QRIS, notifikasi, backup/export |
+| `/dashboard` | owner | Kewajiban manual, status backup terverifikasi, tombol backup & export, angka hari/bulan, stok, status pengiriman laporan. ("Minta analisis" menyusul di Fase 8) |
+| `/pengaturan` | owner | Toko, QRIS, notifikasi. Backup & export ada di `/dashboard`, bersama statusnya — supaya tombol dan keadaan tidak terpisah di dua halaman yang bisa saling bertentangan |
 | `/pengaturan/pengguna` | owner | User & PIN |
 | `/audit` | owner | Audit log viewer |
 
@@ -686,14 +686,54 @@ VACUUM INTO 'C:/.../backups/pos-20260918-214530.db';
 Ini menghasilkan snapshot **konsisten** dalam satu file, benar walaupun mode WAL aktif dan ada kasir sedang menulis. Menyalin `pos.db` mentah saat WAL aktif bisa menghasilkan backup yang rusak atau ketinggalan transaksi terakhir — karena sebagian data masih ada di file `-wal`.
 
 - Dijalankan otomatis **setiap app start** dan **setiap tutup shift**.
-- Simpan **30 salinan terbaru** dengan nama bertanggal, sisanya dipangkas.
+- Simpan **30 salinan terbaru**, dipangkas berdasarkan **waktu modifikasi** — bukan nama. Lihat peringatan di bawah.
 - **Gagal backup tidak boleh crash server** — di-log, ditampilkan di health/dashboard.
-- Tombol **"Backup sekarang"** dan **"Export semua data ke CSV"** (zip: products, transactions, transaction_items, payments, refunds, refund_items, expenses, shifts, stock_movements, audit_logs).
-- Opsional `BACKUP_MIRROR_DIR` — salin backup terbaru ke folder lain (USB, atau folder Google Drive yang tersinkron).
+- Tombol **"Backup sekarang"** dan **"Export semua data ke CSV"** ada di `/dashboard`.
+- Opsional `BACKUP_MIRROR_DIR` — salin backup terbaru ke folder lain (USB, atau folder Google Drive yang tersinkron). Hanya backup yang **lulus verifikasi** yang disalin.
+
+### Verifikasi: backup yang belum pernah dibuka belum bisa disebut cadangan
+
+Setiap backup langsung diperiksa setelah dibuat:
+
+```sql
+ATTACH DATABASE 'file:C:/.../backups/pos-20260920-193045.db?mode=ro' AS verifikasi;
+PRAGMA verifikasi.integrity_check;              -- harus "ok"
+SELECT COUNT(*) FROM verifikasi.transactions;   -- harus bisa dibaca
+DETACH DATABASE verifikasi;
+```
+
+Tiga hal yang perlu disebut:
+
+1. **`mode=ro` bukan hiasan.** Tanpa itu SQLite berhak menulis ke berkas yang sedang diperiksa (pemulihan WAL, misalnya), dan alat pemeriksa berubah menjadi alat yang mengubah barang bukti. Diuji: berkas byte-per-byte identik sebelum dan sesudah verifikasi, tanpa `-wal`/`-shm` tertinggal.
+2. **Hitungan baris, bukan hanya `integrity_check`.** Header yang utuh tidak membuktikan isinya terbaca.
+3. **Gagal verifikasi tidak membatalkan backup.** Berkasnya tetap disimpan — status "tidak terverifikasi" lebih berguna daripada tidak ada berkas sama sekali. Yang berubah: ia tidak disalin ke mirror, dan dashboard mengatakannya apa adanya.
+
+Hasilnya dicatat sebagai `BACKUP_RUN` di audit log, **termasuk saat gagal** — pencatatannya ada di luar blok sukses, karena kejadian yang paling perlu terekam justru kegagalan.
+
+### Peringatan: urutan nama ≠ urutan waktu
+
+Pemangkasan dulu mengurutkan berkas berdasarkan nama, dengan alasan "nama bercap tanggal berarti urutan leksikal sama dengan urutan waktu". Itu salah pada kasus yang paling tidak boleh salah:
+
+```
+pos-20260920-021031.db     backup startup
+pos-20260920-021031-1.db   backup tutup shift, detik yang sama
+```
+
+Secara leksikal `-1.db` datang **sebelum** `.db` (karena `-` < `.`), sehingga berkas yang paling **baru** dianggap paling tua dan justru dialah yang dihapus. Ditemukan `tests/backup.test.ts` saat mirror gagal menyalin berkas yang baru dibuat — berkas itu sudah dihapus oleh prune-nya sendiri. Sekarang urutannya memakai mtime, dan berkas yang baru dibuat dilindungi eksplisit.
 
 **Backup di disk yang sama tidak melindungi dari hard disk mati, laptop hilang, atau ransomware.** Ini toko sungguhan, jadi mirror ke USB/cloud sangat disarankan dan ditulis jujur di README, bukan diklaim aman.
 
-Cara restore ditulis di README dengan bahasa orang non-teknis: tutup aplikasi → salin file backup menjadi `data/pos.db` → hapus `pos.db-wal` dan `pos.db-shm` → nyalakan lagi.
+Cara restore ditulis di README bagian A6 dengan bahasa orang non-teknis, tujuh langkah: matikan aplikasi → pilih backup → simpan yang rusak dengan nama lain → **hapus `pos.db-wal` dan `pos.db-shm`** → salin backup menjadi `data/pos.db` → nyalakan dan periksa tiga hal → terima bahwa penjualan setelah waktu backup memang hilang.
+
+Langkah menghapus `-wal` dan `-shm` adalah yang paling sering terlewat dan paling merusak: keduanya memuat potongan transaksi dari database yang LAMA, dan kalau ditinggalkan SQLite akan menempelkannya ke database hasil pemulihan.
+
+### Export CSV bukan jalur pemulihan
+
+`GET /api/export/csv` menghasilkan satu ZIP berisi satu CSV per tabel, ditulis oleh `src/lib/backup/zip.ts` (metode store, tanpa dependensi baru). Gunanya menyerahkan data ke akuntan dan menyimpan salinan yang tetap terbaca sepuluh tahun lagi — bukan memulihkan toko.
+
+Kolom setiap tabel ditulis **eksplisit** di `src/lib/backup/export.ts`, bukan diambil dari schema. Jadi kolom rahasia yang ditambahkan nanti tidak bisa ikut terbawa tanpa seseorang mengetiknya di sana lebih dulu. `users.pinHash` dan seluruh tabel `settings` (webhook Discord, token Telegram) dikecualikan dengan sengaja, dan ketiadaannya diuji.
+
+Nilai string yang dimulai `=`, `+`, `-`, atau `@` diberi awalan kutip tunggal supaya Excel tidak mengeksekusinya sebagai formula (CSV injection). Angka negatif **tidak** ikut dinetralkan: kolom `difference`, `qtyChange`, dan `stockAfter` memang sering minus, dan menuliskannya sebagai teks membuat pemilik tidak bisa menjumlahkan selisih kasnya.
 
 ### Logging
 Logger sederhana ke console **dan** `data/logs/app-YYYYMMDD.log` (simpan 14 hari). Di laptop toko, jendela terminal sering tertutup — tanpa file log, error yang dilaporkan karyawan tidak bisa ditelusuri.
@@ -733,7 +773,7 @@ Setiap fase berakhir dalam kondisi **bisa dijalankan**, dan wajib lulus `npm run
 | **4** | Void (hari sama + shift OPEN) **+ pesan alasan saat tombol mati + peringatan QRIS `PAID`**, refund sebagian/penuh + alokasi teleskopik, PIN owner server-side. Audit log viewer. CRUD produk, upload gambar, penyesuaian stok + `OPNAME`, **form "Barang masuk" (reason `PURCHASE`) + audit `COST_CHANGE`**, audit perubahan harga. Modul `refund/`. | Refund penuh == netTotal persis; semua aksi muncul di audit; stok bisa bertambah lewat barang masuk |
 | **5** | `PaymentProvider` + `StaticQrisProvider` + registry. State machine bergerbang. Upload gambar QR. Finalisasi `qris.md`. | Double-confirm ditolak; tidak ada PAID tanpa aksi manusia |
 | **6** | Agregasi harian/mingguan/bulanan murni + `/laporan`. Catch-up di `instrumentation.ts` + scheduler interval. Discord + Telegram + WhatsApp stub + backoff + `report_deliveries` idempotent (`trigger` AUTO/MANUAL). Kirim manual & retry. | **Test "server mati 3 hari" + test idempotensi lulus; kirim manual 2× tidak error** |
-| **7** | Mirror backup opsional. Tombol "Backup sekarang" & export CSV. Dashboard owner (termasuk daftar void yang butuh pengembalian manual). README lengkap: cara nyala, cari IP LAN, izin Windows Firewall, `start-toko.bat`, **cara restore untuk orang non-teknis**. | Prosedur restore dijalankan dari awal sampai akhir dan data kembali |
+| **7** | Mirror backup opsional. **Verifikasi backup: `integrity_check` + hitung baris lewat `ATTACH ... mode=ro`.** Tombol "Backup sekarang" & export CSV (ZIP ditulis sendiri, tanpa dependensi baru). Dashboard owner: **kewajiban manual — void atas QRIS `PAID` DAN QRIS yang dibatalkan otomatis saat tutup shift**. README dua bagian: bagian A untuk orang non-teknis (nyalakan, cari IP LAN, izin Windows Firewall, `start-toko.bat`, **restore tujuh langkah termasuk menghapus `-wal`/`-shm`**), bagian B untuk pengembang. | Backup rusak dilaporkan rusak; ZIP export dibuka Windows sendiri di test; kedua jenis kewajiban manual muncul di dashboard lewat test HTTP. **Latihan restore dari awal sampai akhir masih harus dijalankan pemilik** (README A6) |
 | **8** | Gemini: batas 1×/hari, hanya mingguan/bulanan, payload agregat whitelisted, Zod, skip kalau invalid, simpan ke `ai_insights` (append-only), tombol "Minta analisis" + baca cache tanpa panggil API. | Lulus dengan `AI_ENABLED=false` dan dengan response invalid; insight tersimpan bisa dibaca ulang offline |
 
 ---
@@ -745,9 +785,9 @@ Fase 2 lolos `test` + `typecheck` + `lint` + `build`, lalu setiap route menjawab
 | Lapisan | Yang diuji | Yang TIDAK bisa dilihat |
 |---|---|---|
 | **Unit** (`src/lib/**/*.test.ts`) | Matematika uang, waktu, state machine. Cepat, tanpa IO | Database, bundler, HTTP |
-| **Integrasi DB** (`tests/checkout.test.ts`, `tests/qris.test.ts`, `tests/catchup.test.ts`, `tests/db-integrity.test.ts`) | Atomicity, race, rollback, constraint, catch-up dengan jam palsu. Memanggil fungsi service langsung | **Bundler dan route handler** — kode bisa benar tapi tidak pernah bisa dimuat Next.js |
-| **HTTP** (`tests/api-http.test.ts`, `tests/e2e-shift-refund.test.ts`, `tests/e2e-qris.test.ts`, `tests/e2e-reports.test.ts`) | Server Next.js sungguhan: bundling, auth, Zod, status code, envelope error | Perilaku browser (klik, fokus, scanner) |
-| **Bentuk kode** (`src/lib/payment/no-auto-success.test.ts`) | Larangan struktural: tidak ada timer di jalur pembayaran, hanya satu berkas yang menulis `paidAt` | Apakah logikanya benar — ia hanya menjaga bentuknya |
+| **Integrasi DB** (`tests/checkout.test.ts`, `tests/qris.test.ts`, `tests/catchup.test.ts`, `tests/db-integrity.test.ts`, `tests/backup.test.ts`) | Atomicity, race, rollback, constraint, catch-up dengan jam palsu. Memanggil fungsi service langsung | **Bundler dan route handler** — kode bisa benar tapi tidak pernah bisa dimuat Next.js |
+| **HTTP** (`tests/api-http.test.ts`, `tests/e2e-shift-refund.test.ts`, `tests/e2e-qris.test.ts`, `tests/e2e-reports.test.ts`, `tests/idempotency.test.ts`, `tests/e2e-fase7.test.ts`) | Server Next.js sungguhan: bundling, auth, Zod, status code, envelope error | Perilaku browser (klik, fokus, scanner) |
+| **Bentuk kode** (`src/lib/payment/no-auto-success.test.ts`, `src/lib/idempotency.test.ts`) | Larangan struktural: tidak ada timer di jalur pembayaran, hanya satu berkas yang menulis `paidAt`, tidak ada `crypto.randomUUID()` di `src/` | Apakah logikanya benar — ia hanya menjaga bentuknya |
 | **Manual browser** | Interaksi kasir sungguhan | — |
 
 Lapisan HTTP adalah yang paling mahal dan paling sering dilewati, dan justru satu-satunya yang bisa melihat kegagalan bundling. `tests/api-http.test.ts` menjalankan `next dev` sungguhan terhadap SQLite sementara, lalu menembak request nyata.
@@ -821,6 +861,77 @@ Ditulis di sini supaya tidak ada yang mengira sudah selesai:
 - **Ceiling `Int` 32-bit Rp 2,1 miliar** per kolom nominal; agregasi memakai JS `number` sehingga tidak terpengaruh (§4).
 - **HPP memakai harga beli terakhir, bukan rata-rata bergerak** (§9.4). Setelah restock dengan harga lebih tinggi, stok lama ikut dihitung dengan harga baru saat dijual. Laba kotor jadi sedikit konservatif saat harga naik dan sedikit optimistis saat harga turun.
 - **Void atas QRIS yang sudah `PAID` tidak menarik dana.** Sistem tidak punya jalan ke rekening; pengembalian ke pelanggan dilakukan manual oleh pemilik (§9.2). Kewajiban ini dilacak di dashboard, bukan diselesaikan otomatis.
+- **Penyelesaian kewajiban manual tidak dilacak.** Dashboard menampilkan void atas QRIS yang sudah dibayar dan transaksi QRIS yang dibatalkan otomatis saat tutup shift, tapi sistem tidak punya cara menandai "sudah saya urus" — buktinya ada di mutasi rekening, di luar sistem. Daftarnya dibatasi 30 hari terakhir supaya tidak menjadi daftar yang berhenti dibaca. Menambahkan penanda selesai (kolom + endpoint + PIN pemilik) adalah kandidat pekerjaan berikutnya, bukan sesuatu yang diam-diam dianggap sudah ada.
+- **Export CSV bukan jalur pemulihan**, dan tidak memuat `settings` maupun `pinHash`. Memulihkan toko memakai berkas `.db` di `backups/`.
 - **Tidak ada data pelanggan** di v1 — tanpa membership, tanpa piutang.
 - **Tidak ada multi-satuan / konversi satuan** (misal beli per dus, jual per pcs) di v1.
 - **Sistem harus tetap berfungsi penuh saat internet, Discord, Telegram, dan Gemini semuanya mati.** Ini diuji secara eksplisit, bukan diasumsikan.
+
+---
+
+## 20. Kunci sekali-pakai (idempotency)
+
+Masalahnya bukan offline, dan bukan pula dua sumber kebenaran. Ia terjadi di dalam arsitektur ini, hari ini:
+
+```
+kasir tekan Bayar
+      │
+      ▼
+server commit  ← transaksi TERSIMPAN, stok SUDAH turun
+      │
+      ▼
+WiFi tersendat, response tidak sampai
+      │
+      ▼
+kasir melihat "Tidak ada jawaban dari server"
+      │
+      ▼
+kasir tekan Bayar lagi  → transaksi KEDUA, stok turun dua kali
+```
+
+Dari sisi browser, "request tidak pernah sampai" dan "sampai tapi jawabannya hilang" **mustahil dibedakan** (`src/lib/api-client.ts`). Sebelum ada kunci, satu-satunya jalan adalah memperingatkan kasir: *"JANGAN ulangi — periksa dulu di riwayat transaksi."* Peringatan itu benar, tapi ia menyerahkan masalah mekanis kepada manusia yang sedang menghadapi antrean.
+
+### 20.1 Dua kolom, dua tugas berbeda
+
+| Kolom | Tugas | Kalau tidak ada |
+|---|---|---|
+| `idempotencyKey` (nullable, `@unique`) | Menandai *siapa* request ini | Pengulangan membuat penjualan kedua |
+| `idempotencyFingerprint` | Menandai *isi* request itu | Kunci yang sama dengan keranjang berbeda dijawab dengan struk penjualan lain, dan kasir tidak akan pernah tahu |
+
+Nullable dengan sengaja: SQLite mengizinkan banyak NULL pada indeks unique (pola yang sama dipakai `Shift.openKey` dan `ReportDelivery.dedupeKey`). Request tanpa kunci tetap sah — hanya tidak terlindungi.
+
+### 20.2 Gerbangnya di database, bukan di kode
+
+Sama seperti pelunasan pembayaran (§9.1), ada dua lapis dan lapis keduanya ada di DB:
+
+1. **Jalur cepat** — cari baris dengan kunci itu. Ada? kembalikan apa adanya, `200`, tanpa menyentuh logika checkout.
+2. **Indeks unique** — dua request serentak sama-sama lolos lapis 1, lalu `UNIQUE` yang memutuskan pemenang. Yang kalah menerima `P2002`, membaca hasil pemenang, dan mengembalikan transaksi yang sama. Kasir tidak pernah melihat error karena hal ini.
+
+`201` untuk yang membuat, `200` untuk pengulangan. Bedanya bukan kosmetik: `replayed: true` yang membuat layar kasir bisa mengatakan *"sudah tersimpan sebelumnya — tidak dicatat dua kali"*, sehingga kasir tidak menyangka ada penjualan kedua lalu "memperbaiki"-nya dengan void yang tidak perlu.
+
+### 20.3 Yang dilindungi, dan yang sudah aman tanpa ini
+
+| Endpoint | Perlindungan |
+|---|---|
+| `POST /api/transactions` | **Kunci sekali-pakai.** Ini jalur yang paling sering diulang |
+| `POST /api/transactions/:id/refunds` | **Kunci sekali-pakai.** Refund *sebagian* yang diulang lolos guard kumulatif (1 dari 4, lalu 1 dari 4 lagi = 2 terkembalikan) |
+| `POST /api/payments/:id/confirm` | Sudah aman: `updateMany where status='PENDING'` + `count === 1` (§9.1). Pengulangan menemukan baris yang sudah `PAID` dan ditolak |
+| `POST /api/transactions/:id/void` | Sudah aman: status transaksi dijaga, `VOIDED` tidak bisa di-void lagi |
+| `POST /api/shifts/open` | Sudah aman: `openKey @unique` per kasir |
+| Pengiriman laporan otomatis | Sudah aman: `dedupeKey @unique` (§11) |
+
+### 20.4 Kunci dibuat dari `getRandomValues`, bukan `randomUUID`
+
+`crypto.randomUUID()` **hanya tersedia di secure context.** LAN toko berjalan di HTTP tanpa TLS (§7.1), jadi di HP kasir yang membuka `http://192.168.x.x:3000` fungsi itu memang `undefined` — sementara di `localhost` ia ada. Memakainya berarti checkout gagal di perangkat kasir dan **lolos** saat diuji di laptop server.
+
+`crypto.getRandomValues()` tidak dibatasi secure context, jadi UUID v4-nya dirakit dari situ. Kalau bahkan itu tidak ada, `newIdempotencyKey()` mengembalikan `null` dan request dikirim **tanpa** kunci — kembali ke perilaku lama yang sudah dikenal. Kunci yang bisa bertabrakan lebih berbahaya daripada tidak ada kunci.
+
+Larangan ini ditegakkan oleh test yang memindai seluruh `src/` (`src/lib/idempotency.test.ts`), bukan oleh kesepakatan.
+
+### 20.5 Kunci baru saat isi berubah
+
+Aturannya satu baris: **kunci yang sama selama isi request sama, kunci baru begitu isinya berubah.** Layar kasir menghitungnya dari payload-nya sendiri (`useIdempotencyKey`), jadi menambah satu barang lalu menekan Bayar menghasilkan kunci baru — penjualan baru, sebagaimana yang kasir maksud.
+
+Client **tidak** perlu menghitung sidik jari yang sama dengan server. Ia hanya perlu tahu *kapan isinya berubah*; sidik jari di server adalah lapisan kedua yang menangkap kalau client keliru.
+
+PIN pemilik sengaja tidak ikut menentukan kunci refund: kalau ia ikut, salah ketik PIN lalu mengulang akan menghasilkan kunci baru dan refund kedua.

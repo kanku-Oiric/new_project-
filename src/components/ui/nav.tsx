@@ -13,6 +13,7 @@ import { LogoutButton } from './logout-button'
  */
 
 const LINKS: { href: string; label: string; ownerOnly?: boolean }[] = [
+  { href: '/dashboard', label: 'Dashboard', ownerOnly: true },
   { href: '/kasir', label: 'Kasir' },
   { href: '/shift', label: 'Shift' },
   { href: '/pengeluaran', label: 'Pengeluaran' },

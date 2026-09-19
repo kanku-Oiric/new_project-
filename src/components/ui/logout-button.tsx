@@ -7,9 +7,9 @@ import { useRouter } from 'next/navigation'
  * Keluar dan kembali ke daftar pengguna.
  *
  * Dipakai di Nav, jadi tersedia dari SEMUA halaman. Sebelumnya tombol ini hanya
- * ada di /beranda — halaman sisa Fase 1 yang tidak ditautkan dari mana pun —
- * sehingga kasir yang selesai shift tidak punya cara mengembalikan layar ke
- * rekannya tanpa mengetik alamat.
+ * ada di halaman beranda sisa Fase 1 yang tidak ditautkan dari mana pun (halaman
+ * itu sudah dihapus di Fase 7, digantikan /dashboard), sehingga kasir yang selesai
+ * shift tidak punya cara mengembalikan layar ke rekannya tanpa mengetik alamat.
  */
 export function LogoutButton({ compact = false }: { compact?: boolean }) {
   const router = useRouter()

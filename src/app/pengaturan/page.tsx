@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { Nav } from '@/components/ui/nav'
 import { getSession } from '@/lib/auth/session'
@@ -100,6 +101,18 @@ export default async function PengaturanPage() {
           telegramTokenMasked={maskSecret(raw.telegramBotToken)}
           telegramChatId={raw.telegramChatId}
         />
+
+        <section className="mb-4 rounded-xl border border-kasir-border bg-kasir-surface p-4">
+          <h2 className="text-base font-semibold text-kasir-text">Backup & export</h2>
+          <p className="mt-2 text-sm text-kasir-muted">
+            Tombol &quot;Backup sekarang&quot; dan &quot;Export semua data ke CSV&quot; ada di
+            Dashboard, bersama status backup terakhir — supaya keadaannya dan tombolnya tidak pernah
+            terpisah di dua halaman yang bisa saling bertentangan.
+          </p>
+          <Link href="/dashboard" className="mt-2 inline-block text-sm underline">
+            Buka Dashboard
+          </Link>
+        </section>
       </main>
     </>
   )

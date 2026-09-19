@@ -74,6 +74,16 @@ export function voidNeedsManualRefund(
   return status === 'PAID' && method !== 'CASH'
 }
 
+/**
+ * Alasan yang ditulis penutupan shift saat membatalkan transaksi terlantar.
+ *
+ * Satu sumber, karena dashboard MENCARI baris berdasarkan kalimat ini untuk
+ * menyusun daftar "periksa mutasi rekening". Kalau kalimatnya ditulis dua kali,
+ * mengubahnya di satu tempat akan membuat daftar itu sunyi tanpa ada yang tahu —
+ * dan daftar yang sunyi terlihat sama seperti daftar yang kosong.
+ */
+export const AUTO_CANCEL_REASON = 'Dibatalkan otomatis saat tutup shift'
+
 export const MANUAL_REFUND_WARNING =
   'Uang QRIS sudah masuk ke rekening toko. Void hanya membatalkan pencatatan dan mengembalikan stok. ' +
   'Pengembalian uang ke pelanggan harus dilakukan manual oleh pemilik lewat transfer atau tunai. ' +

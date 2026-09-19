@@ -11,5 +11,8 @@ export default async function HomePage() {
   // semua jalur masuk berujung di layar ganti PIN.
   if (session.mustChangePin) redirect('/ganti-pin')
 
-  redirect('/kasir')
+  // Pemilik dan kasir membuka aplikasi ini untuk alasan yang berbeda: kasir untuk
+  // berjualan, pemilik untuk melihat apa yang perlu diurus. Mengarahkan keduanya
+  // ke layar kasir memaksa pemilik mencari, setiap kali.
+  redirect(session.role === 'OWNER' ? '/dashboard' : '/kasir')
 }

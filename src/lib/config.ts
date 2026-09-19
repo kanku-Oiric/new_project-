@@ -17,6 +17,12 @@ const EnvSchema = z.object({
   BACKUP_KEEP: z.coerce.number().int().min(1).max(500).default(30),
   BACKUP_MIRROR_DIR: z.string().optional(),
   /**
+   * Folder backup. Dialihkan oleh test supaya `VACUUM INTO` di dalam test tidak
+   * menaruh berkas berisi data UJI ke dalam folder backup toko — berkas seperti
+   * itu tidak bisa dibedakan dari backup sungguhan saat dibutuhkan.
+   */
+  BACKUP_DIR: z.string().optional(),
+  /**
    * Folder gambar unggahan. Bisa dialihkan supaya test HTTP tidak menulis ke
    * folder data toko, dan supaya pemilik bisa menaruhnya di drive lain.
    */
@@ -61,7 +67,9 @@ export const config = {
       ? path.resolve(ROOT_DIR, env.UPLOADS_DIR.trim())
       : path.join(ROOT_DIR, 'data', 'uploads'),
     logs: path.join(ROOT_DIR, 'data', 'logs'),
-    backups: path.join(ROOT_DIR, 'backups'),
+    backups: env.BACKUP_DIR?.trim()
+      ? path.resolve(ROOT_DIR, env.BACKUP_DIR.trim())
+      : path.join(ROOT_DIR, 'backups'),
   },
 
   backup: {

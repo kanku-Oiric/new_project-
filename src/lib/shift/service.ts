@@ -2,6 +2,7 @@ import 'server-only'
 import type { Prisma } from '@prisma/client'
 import { recordAudit, type AuditActor } from '../audit'
 import { runBackup } from '../backup'
+import { AUTO_CANCEL_REASON } from '../transaction/void-rules'
 import { config } from '../config'
 import { prisma } from '../db/prisma'
 import { ConflictError, NotFoundError, ValidationError } from '../errors'
@@ -184,11 +185,11 @@ export async function closeShift(
     for (const t of pending) {
       await tx.payment.updateMany({
         where: { transactionId: t.id, status: 'PENDING' },
-        data: { status: 'CANCELLED', failureReason: 'Dibatalkan otomatis saat tutup shift' },
+        data: { status: 'CANCELLED', failureReason: AUTO_CANCEL_REASON },
       })
       await tx.transaction.update({
         where: { id: t.id },
-        data: { status: 'CANCELLED', cancelReason: 'Dibatalkan otomatis saat tutup shift' },
+        data: { status: 'CANCELLED', cancelReason: AUTO_CANCEL_REASON },
       })
     }
 
