@@ -128,12 +128,15 @@ export async function getJson<T>(url: string): Promise<ApiOutcome<T>> {
   return classifyResponse<T>(res.status, body, wasJson)
 }
 
-/** POST JSON yang mengembalikan hasil terklasifikasi, bukan melempar. */
-export async function postJson<T>(url: string, payload: unknown): Promise<ApiOutcome<T>> {
+async function sendJson<T>(
+  method: 'POST' | 'PATCH',
+  url: string,
+  payload: unknown,
+): Promise<ApiOutcome<T>> {
   let res: Response
   try {
     res = await fetch(url, {
-      method: 'POST',
+      method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
@@ -142,6 +145,33 @@ export async function postJson<T>(url: string, payload: unknown): Promise<ApiOut
       kind: 'network-error',
       message: 'Tidak ada jawaban dari server.',
     }
+  }
+  const { body, wasJson } = await readBody(res)
+  return classifyResponse<T>(res.status, body, wasJson)
+}
+
+/** POST JSON yang mengembalikan hasil terklasifikasi, bukan melempar. */
+export async function postJson<T>(url: string, payload: unknown): Promise<ApiOutcome<T>> {
+  return sendJson<T>('POST', url, payload)
+}
+
+export async function patchJson<T>(url: string, payload: unknown): Promise<ApiOutcome<T>> {
+  return sendJson<T>('PATCH', url, payload)
+}
+
+/**
+ * POST multipart, untuk unggah berkas.
+ *
+ * `Content-Type` sengaja TIDAK diisi: browser harus menuliskannya sendiri
+ * lengkap dengan boundary, dan mengisinya manual justru merusak parsing di
+ * server.
+ */
+export async function postForm<T>(url: string, form: FormData): Promise<ApiOutcome<T>> {
+  let res: Response
+  try {
+    res = await fetch(url, { method: 'POST', body: form })
+  } catch {
+    return { kind: 'network-error', message: 'Tidak ada jawaban dari server.' }
   }
   const { body, wasJson } = await readBody(res)
   return classifyResponse<T>(res.status, body, wasJson)

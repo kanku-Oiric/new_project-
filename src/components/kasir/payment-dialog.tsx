@@ -8,20 +8,23 @@ import type { PaymentMethod } from '@/lib/enums'
 /**
  * Dialog pembayaran.
  *
- * Tunai saja di Fase 2. Tombol QRIS sengaja ditampilkan dalam keadaan mati
- * dengan keterangan, bukan disembunyikan: pemilik perlu melihat bahwa jalurnya
- * ada dan belum aktif, bukan mengira sistem ini tidak mendukung QRIS.
+ * Tombol QRIS ditampilkan mati DENGAN KETERANGAN saat belum dikonfigurasi, bukan
+ * disembunyikan: kasir yang melihat tombol mati tanpa alasan akan menelepon
+ * pemilik untuk hal yang sudah punya jawaban di layar.
  */
 export function PaymentDialog({
   amount,
   busy,
   error,
+  qris,
   onCancel,
   onPay,
 }: {
   amount: number
   busy: boolean
   error: string | null
+  /** Keadaan provider QRIS, apa adanya dari server. */
+  qris: { configured: boolean; label: string; hint: string | null }
   onCancel: () => void
   onPay: (method: PaymentMethod, amountTendered: number) => void
 }) {
@@ -131,14 +134,19 @@ export function PaymentDialog({
           </button>
         </div>
 
-        <button
-          type="button"
-          disabled
-          title="QRIS dikerjakan di Fase 5"
-          className="mt-2 h-12 w-full rounded-xl border border-dashed border-kasir-border text-sm text-kasir-muted disabled:opacity-70"
-        >
-          QRIS — belum aktif (Fase 5)
-        </button>
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => onPay('QRIS_STATIC', 0)}
+            disabled={busy || !qris.configured}
+            className="h-12 w-full rounded-xl border border-kasir-border text-base text-kasir-text disabled:border-dashed disabled:text-kasir-muted disabled:opacity-70"
+          >
+            {qris.configured ? 'Bayar dengan QRIS' : qris.label}
+          </button>
+          {!qris.configured && qris.hint && (
+            <p className="mt-1 text-xs text-kasir-muted">{qris.hint}</p>
+          )}
+        </div>
       </div>
     </div>
   )

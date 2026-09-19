@@ -2,6 +2,7 @@ node_modules/
 .next/
 .next-test/
 .next-e2e/
+.next-qris/
 out/
 build/
 next-env.d.ts

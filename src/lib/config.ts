@@ -16,6 +16,11 @@ const EnvSchema = z.object({
   TIMEZONE: z.string().min(1).default(DEFAULT_TIMEZONE),
   BACKUP_KEEP: z.coerce.number().int().min(1).max(500).default(30),
   BACKUP_MIRROR_DIR: z.string().optional(),
+  /**
+   * Folder gambar unggahan. Bisa dialihkan supaya test HTTP tidak menulis ke
+   * folder data toko, dan supaya pemilik bisa menaruhnya di drive lain.
+   */
+  UPLOADS_DIR: z.string().optional(),
   AI_ENABLED: z
     .string()
     .optional()
@@ -52,7 +57,9 @@ export const config = {
     data: path.join(ROOT_DIR, 'data'),
     /** File DB SQLite. Harus cocok dengan DATABASE_URL di prisma/schema.prisma. */
     database: path.join(ROOT_DIR, 'data', 'pos.db'),
-    uploads: path.join(ROOT_DIR, 'data', 'uploads'),
+    uploads: env.UPLOADS_DIR?.trim()
+      ? path.resolve(ROOT_DIR, env.UPLOADS_DIR.trim())
+      : path.join(ROOT_DIR, 'data', 'uploads'),
     logs: path.join(ROOT_DIR, 'data', 'logs'),
     backups: path.join(ROOT_DIR, 'backups'),
   },

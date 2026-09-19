@@ -7,6 +7,7 @@ const LINKS: { href: string; label: string; ownerOnly?: boolean }[] = [
   { href: '/pengeluaran', label: 'Pengeluaran' },
   { href: '/transaksi', label: 'Transaksi' },
   { href: '/produk', label: 'Produk', ownerOnly: true },
+  { href: '/pengaturan', label: 'Pengaturan', ownerOnly: true },
   { href: '/audit', label: 'Audit', ownerOnly: true },
 ]
 

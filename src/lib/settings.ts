@@ -1,6 +1,7 @@
 import { z } from 'zod'
-import type { Db } from './audit'
+import { recordAudit, type AuditActor, type Db } from './audit'
 import { prisma } from './db/prisma'
+import { ValidationError } from './errors'
 
 /**
  * Settings disimpan sebagai key → string, lalu di-parse per key lewat Zod.
@@ -110,6 +111,91 @@ export function maskSecret(value: string): string {
   if (value.length === 0) return ''
   if (value.length <= 4) return '••••'
   return `••••${value.slice(-4)}`
+}
+
+export interface SettingsActor extends AuditActor {
+  userId: string
+  /** Pemilik yang PIN-nya sudah diverifikasi server. */
+  authorizedByUserId: string
+}
+
+function isSettingKey(key: string): key is SettingKey {
+  return (SETTING_KEYS as string[]).includes(key)
+}
+
+/**
+ * Ubah beberapa setting sekaligus.
+ *
+ * Aturan yang ditegakkan di sini, bukan di UI:
+ *  - key yang tidak dikenal ditolak, bukan disimpan sebagai baris liar;
+ *  - nilainya wajib lolos schema key-nya sebelum menyentuh database;
+ *  - QRIS tidak bisa dinyalakan tanpa gambar QR — kalau bisa, kasir menghadap
+ *    layar kosong sementara pelanggan menunggu;
+ *  - nilai rahasia (webhook, token) ditulis ke audit log dalam bentuk tersamar.
+ *    Audit log dibaca pemilik, tapi ia bukan tempat menyimpan kredensial.
+ */
+export async function updateSettings(
+  values: Record<string, string>,
+  actor: SettingsActor,
+): Promise<{ changed: SettingKey[] }> {
+  const entries: [SettingKey, string][] = []
+
+  for (const [key, value] of Object.entries(values)) {
+    if (!isSettingKey(key)) {
+      throw new ValidationError(`Pengaturan tidak dikenal: ${key}`)
+    }
+    const parsed = SETTING_DEFS[key].schema.safeParse(value)
+    if (!parsed.success) {
+      throw new ValidationError(
+        `Nilai pengaturan "${key}" tidak sah: ${parsed.error.issues[0]?.message ?? 'tidak valid'}`,
+      )
+    }
+    entries.push([key, value])
+  }
+
+  if (entries.length === 0) {
+    throw new ValidationError('Tidak ada pengaturan yang dikirim')
+  }
+
+  const before = await getAllSettingsRaw()
+  const merged = { ...before, ...Object.fromEntries(entries) }
+
+  if (merged.qrisEnabled === 'true' && merged.qrisImagePath.trim() === '') {
+    throw new ValidationError(
+      'Unggah gambar QR statis dulu sebelum menyalakan QRIS. Tanpa gambar, kasir tidak punya apa pun untuk ditunjukkan ke pelanggan.',
+    )
+  }
+
+  const changed: SettingKey[] = []
+
+  await prisma.$transaction(async (tx) => {
+    for (const [key, value] of entries) {
+      if (before[key] === value) continue
+
+      await tx.setting.upsert({
+        where: { key },
+        create: { key, value, updatedByUserId: actor.userId },
+        update: { value, updatedByUserId: actor.userId },
+      })
+
+      const secret = isSecretKey(key)
+      await recordAudit(tx, actor, {
+        action: 'SETTING_CHANGE',
+        summary: `Pengaturan "${key}" diubah`,
+        entityType: 'Setting',
+        entityId: key,
+        before: { value: secret ? maskSecret(before[key]) : before[key] },
+        after: {
+          value: secret ? maskSecret(value) : value,
+          authorizedByUserId: actor.authorizedByUserId,
+        },
+      })
+
+      changed.push(key)
+    }
+  })
+
+  return { changed }
 }
 
 /** Tulis semua default yang belum ada. Idempoten — aman dijalankan berkali-kali. */

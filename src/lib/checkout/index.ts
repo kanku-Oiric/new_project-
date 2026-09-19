@@ -6,8 +6,9 @@ import { nextNumber } from '../db/counter'
 import { prisma } from '../db/prisma'
 import { applyStockMovement } from '../db/stock'
 import { ConflictError, NotFoundError, ValidationError } from '../errors'
-import { assertCashSufficient, settlesImmediately } from '../payment'
-import type { PaymentMethod } from '../enums'
+import { assertCashSufficient, canTransition, settlesImmediately } from '../payment'
+import { providerForMethod } from '../payment/registry'
+import type { PaymentMethod, PaymentStatus } from '../enums'
 import { toBusinessDate } from '../time'
 
 /**
@@ -39,8 +40,17 @@ export interface CheckoutInput {
   note?: string
 }
 
-export interface CheckoutActor extends AuditActor {
+/**
+ * Yang dibutuhkan untuk MELUNASKAN. Sengaja lebih sempit daripada
+ * `CheckoutActor`: konfirmasi QRIS datang lewat request tersendiri yang tidak
+ * membuat transaksi baru, jadi ia tidak perlu tahu shift mana pun — transaksinya
+ * sudah terikat ke shift saat dibuat.
+ */
+export interface SettleActor extends AuditActor {
   userId: string
+}
+
+export interface CheckoutActor extends SettleActor {
   shiftId: string
 }
 
@@ -53,6 +63,8 @@ export interface NegativeStockWarning {
 export interface CheckoutResult {
   transactionId: string
   trxNumber: string
+  /** Dibutuhkan layar kasir untuk mengonfirmasi/membatalkan pembayaran QRIS. */
+  paymentId: string
   status: string
   netTotal: number
   changeAmount: number | null
@@ -176,7 +188,10 @@ export async function createTransactionInTx(
       amount: totals.netTotal,
       amountTendered,
       changeAmount,
-      providerName: input.method === 'CASH' ? 'cash' : 'qris-static',
+      // Nama provider diambil dari registry, bukan ditulis literal, supaya
+      // tidak ada baris pembayaran yang mengaku dilayani provider yang tidak
+      // terdaftar (docs/qris.md §5).
+      providerName: providerForMethod(input.method).name,
     },
   })
 
@@ -202,7 +217,7 @@ export interface SettleResult {
 export async function settleTransactionInTx(
   tx: Prisma.TransactionClient,
   transactionId: string,
-  actor: CheckoutActor,
+  actor: SettleActor,
   now: Date = new Date(),
 ): Promise<SettleResult> {
   const transaction = await tx.transaction.findUnique({
@@ -214,12 +229,20 @@ export async function settleTransactionInTx(
     throw new ConflictError(`Transaksi sudah berstatus ${transaction.status}`)
   }
 
-  const pending = transaction.payments.find((p) => p.status === 'PENDING')
-  if (!pending) throw new ConflictError('Tidak ada pembayaran yang menunggu konfirmasi')
+  // LAPIS 1 — fungsi murni `canTransition` yang MEMILIH baris mana yang boleh
+  // dilunaskan, bukan sekadar mengiyakan pilihan yang sudah diambil. Status yang
+  // dinilai adalah status TERSIMPAN di database (docs/qris.md §4).
+  const pending = transaction.payments.find((p) =>
+    canTransition(p.status as PaymentStatus, 'PAID'),
+  )
+  if (!pending) {
+    const statuses = transaction.payments.map((p) => p.status).join(', ') || 'tidak ada'
+    throw new ConflictError(`Tidak ada pembayaran yang bisa dilunaskan (status: ${statuses})`)
+  }
 
-  // Gerbang transisi ada DI DATABASE, bukan hanya di kode. Dua kasir yang
+  // LAPIS 2 — gerbangnya ada DI DATABASE, bukan hanya di kode. Dua kasir yang
   // menekan konfirmasi bersamaan sama-sama membaca PENDING dan sama-sama lolos
-  // pengecekan di atas; hanya satu yang mendapat count === 1 di sini.
+  // lapis 1; hanya satu yang mendapat count === 1 di sini.
   const updated = await tx.payment.updateMany({
     where: { id: pending.id, status: 'PENDING' },
     data: { status: 'PAID', paidAt: now, confirmedByUserId: actor.userId },
@@ -285,6 +308,20 @@ export async function checkout(
   actor: CheckoutActor,
   now: Date = new Date(),
 ): Promise<CheckoutResult> {
+  // Metode yang providernya belum siap ditolak SEBELUM transaksi dibuat. Kalau
+  // tidak, kasir mendapat transaksi PENDING yang tidak akan pernah bisa dibayar
+  // karena gambar QR-nya memang belum ada.
+  //
+  // Statusnya 400, bukan 503: tidak ada yang tertulis ke database, dan tindakan
+  // yang benar bagi kasir adalah beralih ke tunai — bukan "periksa riwayat
+  // sebelum mengulang" seperti yang ditampilkan UI untuk kegagalan server.
+  const readiness = await providerForMethod(input.method).describe()
+  if (!readiness.configured) {
+    throw new ValidationError(
+      [readiness.label, readiness.hint].filter(Boolean).join('. '),
+    )
+  }
+
   return prisma.$transaction(async (tx) => {
     const created = await createTransactionInTx(tx, input, actor, now)
 
@@ -292,6 +329,7 @@ export async function checkout(
       return {
         transactionId: created.transactionId,
         trxNumber: created.trxNumber,
+        paymentId: created.paymentId,
         status: 'PENDING',
         netTotal: created.totals.netTotal,
         changeAmount: null,
@@ -304,6 +342,7 @@ export async function checkout(
     return {
       transactionId: created.transactionId,
       trxNumber: created.trxNumber,
+      paymentId: created.paymentId,
       status: 'COMPLETED',
       netTotal: created.totals.netTotal,
       changeAmount: created.changeAmount,

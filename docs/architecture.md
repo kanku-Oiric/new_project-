@@ -630,9 +630,10 @@ POST   /api/transactions/:id/refunds      PIN owner
 
 **Pembayaran**
 ```
-POST   /api/payments/:id/confirm          settle — kasir boleh (QRIS manual)
-POST   /api/payments/:id/cancel
-GET    /api/payments/:id/status
+POST   /api/payments/:id/confirm          settle — kasir boleh (QRIS manual), tanpa body
+                                          satu-satunya jalan menuju PAID untuk QRIS statis
+POST   /api/payments/:id/cancel           { reason? } — hanya dari PENDING
+GET    /api/payments/:id/status            HANYA membaca; tidak pernah melunaskan
 ```
 
 **Shift & pengeluaran**
@@ -662,7 +663,10 @@ POST   /api/ai/insight                    owner — { kind, periodKey, refresh? 
 **Operasional**
 ```
 GET    /api/settings                      owner — secret ter-mask
-PATCH  /api/settings                      owner — audit SETTING_CHANGE
+PATCH  /api/settings                      owner + PIN owner — { ownerPin, values }
+                                          audit SETTING_CHANGE per key, secret ter-mask
+POST   /api/settings/qris-image           owner + PIN owner — multipart { ownerPin, file }
+                                          tipe ditentukan dari magic bytes, bukan nama berkas
 POST   /api/backup                        owner
 GET    /api/export/csv                    owner — stream zip
 GET    /api/audit-logs?action=&from=&to=  owner (read-only, tanpa PATCH/DELETE)
@@ -739,8 +743,9 @@ Fase 2 lolos `test` + `typecheck` + `lint` + `build`, lalu setiap route menjawab
 | Lapisan | Yang diuji | Yang TIDAK bisa dilihat |
 |---|---|---|
 | **Unit** (`src/lib/**/*.test.ts`) | Matematika uang, waktu, state machine. Cepat, tanpa IO | Database, bundler, HTTP |
-| **Integrasi DB** (`tests/checkout.test.ts`, `tests/db-integrity.test.ts`) | Atomicity, race, rollback, constraint. Memanggil fungsi service langsung | **Bundler dan route handler** — kode bisa benar tapi tidak pernah bisa dimuat Next.js |
-| **HTTP** (`tests/api-http.test.ts`) | Server Next.js sungguhan: bundling, auth, Zod, status code, envelope error | Perilaku browser (klik, fokus, scanner) |
+| **Integrasi DB** (`tests/checkout.test.ts`, `tests/qris.test.ts`, `tests/db-integrity.test.ts`) | Atomicity, race, rollback, constraint. Memanggil fungsi service langsung | **Bundler dan route handler** — kode bisa benar tapi tidak pernah bisa dimuat Next.js |
+| **HTTP** (`tests/api-http.test.ts`, `tests/e2e-shift-refund.test.ts`, `tests/e2e-qris.test.ts`) | Server Next.js sungguhan: bundling, auth, Zod, status code, envelope error | Perilaku browser (klik, fokus, scanner) |
+| **Bentuk kode** (`src/lib/payment/no-auto-success.test.ts`) | Larangan struktural: tidak ada timer di jalur pembayaran, hanya satu berkas yang menulis `paidAt` | Apakah logikanya benar — ia hanya menjaga bentuknya |
 | **Manual browser** | Interaksi kasir sungguhan | — |
 
 Lapisan HTTP adalah yang paling mahal dan paling sering dilewati, dan justru satu-satunya yang bisa melihat kegagalan bundling. `tests/api-http.test.ts` menjalankan `next dev` sungguhan terhadap SQLite sementara, lalu menembak request nyata.

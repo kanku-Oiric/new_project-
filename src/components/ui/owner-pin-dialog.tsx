@@ -18,6 +18,7 @@ export function OwnerPinDialog({
   busy,
   error,
   reasonLabel,
+  tone = 'danger',
   onCancel,
   onConfirm,
 }: {
@@ -28,7 +29,14 @@ export function OwnerPinDialog({
   confirmLabel: string
   busy: boolean
   error: string | null
-  reasonLabel: string
+  /**
+   * `null` berarti aksinya tidak butuh alasan tertulis. Void dan refund selalu
+   * butuh (uang pelanggan berpindah); mengubah pengaturan tidak — memaksa
+   * mengarang alasan hanya melahirkan baris audit berisi "asdf".
+   */
+  reasonLabel: string | null
+  /** Aksi yang menghapus/membalikkan uang berwarna merah; sisanya netral. */
+  tone?: 'danger' | 'accent'
   onCancel: () => void
   onConfirm: (ownerPin: string, reason: string) => void
 }) {
@@ -36,13 +44,17 @@ export function OwnerPinDialog({
   const [reason, setReason] = useState('')
   const [acknowledged, setAcknowledged] = useState(false)
   const reasonRef = useRef<HTMLInputElement>(null)
+  const pinRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    reasonRef.current?.focus()
+    if (reasonRef.current) reasonRef.current.focus()
+    else pinRef.current?.focus()
   }, [])
 
   const ready =
-    pin.length >= PIN_MIN_LENGTH && reason.trim().length >= 3 && (!warning || acknowledged)
+    pin.length >= PIN_MIN_LENGTH &&
+    (reasonLabel === null || reason.trim().length >= 3) &&
+    (!warning || acknowledged)
 
   return (
     <div
@@ -70,21 +82,24 @@ export function OwnerPinDialog({
           </div>
         )}
 
-        <label className="mt-3 block">
-          <span className="mb-1 block text-xs text-kasir-muted">{reasonLabel}</span>
-          <input
-            ref={reasonRef}
-            type="text"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            maxLength={300}
-            className="w-full rounded-lg border border-kasir-border px-3 text-base"
-          />
-        </label>
+        {reasonLabel !== null && (
+          <label className="mt-3 block">
+            <span className="mb-1 block text-xs text-kasir-muted">{reasonLabel}</span>
+            <input
+              ref={reasonRef}
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              maxLength={300}
+              className="w-full rounded-lg border border-kasir-border px-3 text-base"
+            />
+          </label>
+        )}
 
         <label className="mt-3 block">
           <span className="mb-1 block text-xs text-kasir-muted">PIN pemilik</span>
           <input
+            ref={pinRef}
             type="password"
             inputMode="numeric"
             autoComplete="off"
@@ -117,7 +132,9 @@ export function OwnerPinDialog({
             type="button"
             onClick={() => onConfirm(pin, reason.trim())}
             disabled={busy || !ready}
-            className="h-12 flex-[2] rounded-xl bg-kasir-danger text-base font-medium text-white disabled:opacity-40"
+            className={`h-12 flex-[2] rounded-xl text-base font-medium text-white disabled:opacity-40 ${
+              tone === 'danger' ? 'bg-kasir-danger' : 'bg-kasir-accent'
+            }`}
           >
             {busy ? 'Memproses…' : confirmLabel}
           </button>

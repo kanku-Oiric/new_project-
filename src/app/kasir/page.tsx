@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/auth/session'
 import { prisma } from '@/lib/db/prisma'
+import { providerForMethod } from '@/lib/payment/registry'
+import { getSetting } from '@/lib/settings'
 import { KasirClient } from './kasir-client'
 
 export const dynamic = 'force-dynamic'
@@ -20,6 +22,9 @@ const PRODUCT_FIELDS = {
 export default async function KasirPage() {
   const session = await getSession()
   if (!session) redirect('/login')
+  // Gerbang PIN seed juga berlaku di layar kasir. Tanpa baris ini, kasir bisa
+  // berjualan sepanjang hari dengan PIN bawaan yang tertulis di dokumentasi.
+  if (session.mustChangePin) redirect('/ganti-pin')
 
   // hargaBeli sengaja tidak ikut di select: layar kasir dipakai karyawan di
   // depan pelanggan, dan margin toko bukan konsumsi mereka.
@@ -38,11 +43,26 @@ export default async function KasirPage() {
     }),
   ])
 
+  // Keadaan QRIS dibaca dari providernya, bukan ditebak dari setting di sini.
+  // Satu sumber kalimat berarti layar kasir tidak bisa mengklaim lebih dari yang
+  // sebenarnya aktif (docs/qris.md §3.2).
+  const qrisProvider = providerForMethod('QRIS_STATIC')
+  const [qrisReadiness, qrisImage] = await Promise.all([
+    qrisProvider.describe(),
+    getSetting('qrisImagePath'),
+  ])
+
   return (
     <KasirClient
       initialProducts={products}
       initialKategori={kategori.map((k) => k.kategori)}
       cashierName={session.name}
+      qris={{
+        configured: qrisReadiness.configured,
+        label: qrisReadiness.label,
+        hint: qrisReadiness.hint,
+      }}
+      qrisImageUrl={qrisImage ? `/api/uploads/${qrisImage}` : null}
     />
   )
 }

@@ -7,12 +7,22 @@ import type { PaymentMethod } from '@/lib/enums'
 import { CartPanel } from '@/components/kasir/cart-panel'
 import { PaymentDialog } from '@/components/kasir/payment-dialog'
 import { ProductPanel } from '@/components/kasir/product-panel'
+import { QrisPending } from '@/components/kasir/qris-pending'
 import type { CartItem, KasirProduct } from '@/components/kasir/types'
 
 interface CheckoutResponse {
   transactionId: string
   trxNumber: string
+  paymentId: string
+  status: string
+  netTotal: number
   changeAmount: number | null
+  negativeStock: { productName: string; stockAfter: number }[]
+}
+
+interface ConfirmResponse {
+  transactionId: string
+  trxNumber: string
   negativeStock: { productName: string; stockAfter: number }[]
 }
 
@@ -23,14 +33,26 @@ interface LastSale {
   negativeStock: { productName: string; stockAfter: number }[]
 }
 
+/** Transaksi QRIS yang sudah dibuat dan menunggu konfirmasi kasir. */
+interface PendingQris {
+  paymentId: string
+  transactionId: string
+  trxNumber: string
+  amount: number
+}
+
 export function KasirClient({
   initialProducts,
   initialKategori,
   cashierName,
+  qris,
+  qrisImageUrl,
 }: {
   initialProducts: KasirProduct[]
   initialKategori: string[]
   cashierName: string
+  qris: { configured: boolean; label: string; hint: string | null }
+  qrisImageUrl: string | null
 }) {
   const [products, setProducts] = useState(initialProducts)
   const [kategoriList] = useState(initialKategori)
@@ -42,6 +64,8 @@ export function KasirClient({
   const [payError, setPayError] = useState<string | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   const [lastSale, setLastSale] = useState<LastSale | null>(null)
+  const [pendingQris, setPendingQris] = useState<PendingQris | null>(null)
+  const [qrisStatus, setQrisStatus] = useState<string | null>(null)
 
   // Setiap pencarian membatalkan hasil pencarian sebelumnya, supaya respons
   // yang datang terlambat tidak menimpa hasil yang lebih baru.
@@ -156,6 +180,21 @@ export function KasirClient({
     }
   }, [items, transactionDiscount])
 
+  /** Selesai: tampilkan struk, kosongkan keranjang, segarkan stok. */
+  const finishSale = useCallback(
+    (sale: LastSale) => {
+      setLastSale(sale)
+      setItems([])
+      setTransactionDiscount(0)
+      setPaying(false)
+      setPendingQris(null)
+      setQrisStatus(null)
+      setBusy(false)
+      void search('', null)
+    },
+    [search],
+  )
+
   const pay = useCallback(
     async (method: PaymentMethod, amountTendered: number) => {
       if (!totals) return
@@ -170,7 +209,9 @@ export function KasirClient({
         })),
         transactionDiscount,
         method,
-        amountTendered,
+        // Hanya tunai punya uang yang diserahkan. Untuk QRIS, mengirim angka
+        // apa pun di sini hanya akan membingungkan pembacaan data nanti.
+        ...(method === 'CASH' ? { amountTendered } : {}),
       })
 
       if (outcome.kind !== 'ok') {
@@ -184,22 +225,96 @@ export function KasirClient({
       }
 
       const result = outcome.data
-      setLastSale({
+
+      // QRIS berhenti di PENDING. Stok BELUM berkurang dan tidak akan berkurang
+      // sampai kasir mengonfirmasi (docs/qris.md §3.1).
+      if (result.status === 'PENDING') {
+        setPendingQris({
+          paymentId: result.paymentId,
+          transactionId: result.transactionId,
+          trxNumber: result.trxNumber,
+          amount: result.netTotal,
+        })
+        setQrisStatus(null)
+        setBusy(false)
+        return
+      }
+
+      finishSale({
         trxNumber: result.trxNumber,
         transactionId: result.transactionId,
         changeAmount: result.changeAmount,
         negativeStock: result.negativeStock ?? [],
       })
-
-      // Kembali ke keranjang kosong untuk transaksi berikutnya.
-      setItems([])
-      setTransactionDiscount(0)
-      setPaying(false)
-      setBusy(false)
-      void search('', null)
     },
-    [items, totals, transactionDiscount, search],
+    [items, totals, transactionDiscount, finishSale],
   )
+
+  /**
+   * Konfirmasi pembayaran QRIS.
+   *
+   * Dipanggil HANYA dari tombol. Tidak ada efek, timer, atau interval di file
+   * ini yang bisa memanggilnya sendiri.
+   */
+  const confirmQris = useCallback(async () => {
+    if (!pendingQris) return
+    setBusy(true)
+    setPayError(null)
+
+    const outcome = await postJson<ConfirmResponse>(
+      `/api/payments/${pendingQris.paymentId}/confirm`,
+      {},
+    )
+
+    if (outcome.kind !== 'ok') {
+      setPayError(outcomeMessage(outcome, true))
+      setBusy(false)
+      return
+    }
+
+    finishSale({
+      trxNumber: outcome.data.trxNumber,
+      transactionId: outcome.data.transactionId,
+      changeAmount: null,
+      negativeStock: outcome.data.negativeStock ?? [],
+    })
+  }, [pendingQris, finishSale])
+
+  /** Batalkan QRIS. Keranjang DIBIARKAN utuh supaya bisa lanjut ke tunai. */
+  const cancelQris = useCallback(async () => {
+    if (!pendingQris) return
+    setBusy(true)
+    setPayError(null)
+
+    const outcome = await postJson(`/api/payments/${pendingQris.paymentId}/cancel`, {
+      reason: 'Dibatalkan kasir di layar pembayaran',
+    })
+
+    setBusy(false)
+    if (outcome.kind !== 'ok') {
+      setPayError(outcomeMessage(outcome, true))
+      return
+    }
+
+    setPendingQris(null)
+    setQrisStatus(null)
+    setBanner(
+      `${pendingQris.trxNumber} dibatalkan. Keranjang masih utuh — bisa dilanjutkan dengan tunai.`,
+    )
+  }, [pendingQris])
+
+  /** Baca status tersimpan. Tidak mengubah apa pun, di sisi mana pun. */
+  const refreshQrisStatus = useCallback(async () => {
+    if (!pendingQris) return
+    const outcome = await getJson<{ status: string; transactionStatus: string }>(
+      `/api/payments/${pendingQris.paymentId}/status`,
+    )
+    if (outcome.kind !== 'ok') {
+      setPayError(outcomeMessage(outcome, false))
+      return
+    }
+    setQrisStatus(outcome.data.status)
+  }, [pendingQris])
 
   // Muat ulang daftar produk setelah penjualan supaya angka stok ikut segar.
   useEffect(() => {
@@ -270,13 +385,28 @@ export function KasirClient({
         />
       </div>
 
-      {paying && totals && (
+      {paying && totals && !pendingQris && (
         <PaymentDialog
           amount={totals.netTotal}
           busy={busy}
           error={payError}
+          qris={qris}
           onCancel={() => setPaying(false)}
           onPay={pay}
+        />
+      )}
+
+      {pendingQris && (
+        <QrisPending
+          trxNumber={pendingQris.trxNumber}
+          amount={pendingQris.amount}
+          qrImageUrl={qrisImageUrl}
+          storedStatus={qrisStatus}
+          busy={busy}
+          error={payError}
+          onConfirm={confirmQris}
+          onCancel={cancelQris}
+          onRefreshStatus={refreshQrisStatus}
         />
       )}
     </div>

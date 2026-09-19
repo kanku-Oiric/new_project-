@@ -13,6 +13,7 @@ const config = [
       // Folder build terpisah milik tests/api-http.test.ts (NEXT_DIST_DIR).
       '.next-test/**',
       '.next-e2e/**',
+      '.next-qris/**',
       'node_modules/**',
       'data/**',
       'backups/**',
