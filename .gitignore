@@ -1,30 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Aturan: apa pun yang berisi DATA TOKO atau KREDENSIAL tidak pernah masuk git.
+# Repo ini boleh dibagikan; isi folder data/ tidak.
+# ─────────────────────────────────────────────────────────────────────────────
+
 node_modules/
+out/
+build/
+next-env.d.ts
+
+# Folder build Next.js. Yang bernomor adalah milik test HTTP (NEXT_DIST_DIR),
+# masing-masing terpisah supaya test tidak merusak server dev yang sedang
+# dipakai — lihat docs/architecture.md §18.1.
 .next/
 .next-test/
 .next-e2e/
 .next-qris/
 .next-reports/
 .next-build/
-out/
-build/
-next-env.d.ts
 
-# Data toko — JANGAN pernah masuk version control
+# ── Data toko — JANGAN pernah masuk version control ──────────────────────────
+# Isinya penjualan sungguhan, PIN ter-hash, dan gambar QRIS toko.
 data/
 backups/
 
-# Env
-.env
-.env.local
-.env.production
+# Database SQLite di mana pun ia disalin. Pola -wal dan -shm ikut, karena
+# menyalin pos.db tanpa keduanya menghasilkan backup yang rusak.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
 
-# Editor & OS
+# ── Kredensial ───────────────────────────────────────────────────────────────
+# Catch-all supaya varian seperti .env.production.local ikut terjaring.
+# .env.example DIKECUALIKAN dengan sengaja: isinya contoh tanpa nilai rahasia,
+# dan justru itu yang dibutuhkan orang untuk menyiapkan mesin baru.
+.env
+.env.*
+!.env.example
+
+# Kunci dan sertifikat, kalau suatu hari LAN toko dipasangi TLS.
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+
+# ── Log ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Berkas sementara ─────────────────────────────────────────────────────────
+# Script sekali pakai untuk memeriksa database saat pengembangan.
+tmp-*
+*.bak
+*.orig
+*~
+
+# ── Editor & OS ──────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
-# Test & cache
+# ── Test & cache ─────────────────────────────────────────────────────────────
 coverage/
 *.tsbuildinfo
 .eslintcache
