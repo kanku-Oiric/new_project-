@@ -1,8 +1,11 @@
 import { redirect } from 'next/navigation'
 import { Nav } from '@/components/ui/nav'
 import { getSession } from '@/lib/auth/session'
+import { prisma } from '@/lib/db/prisma'
+import { listNotificationProviders } from '@/lib/notify/registry'
 import { listProviders } from '@/lib/payment/registry'
-import { getAllSettingsRaw } from '@/lib/settings'
+import { getAllSettingsRaw, maskSecret } from '@/lib/settings'
+import { NotifikasiSettings, type ChannelStatus } from './notifikasi-settings'
 import { QrisSettings } from './qris-settings'
 
 export const dynamic = 'force-dynamic'
@@ -26,6 +29,26 @@ export default async function PengaturanPage() {
         method: p.method,
         settlesOnCreate: p.settlesOnCreate,
         ...readiness,
+      }
+    }),
+  )
+
+  // "Terakhir berhasil" diambil dari pengiriman yang BENAR-BENAR terkirim,
+  // bukan dari kredensial yang terisi.
+  const notifChannels: ChannelStatus[] = await Promise.all(
+    listNotificationProviders().map(async (p) => {
+      const readiness = await p.describe()
+      const lastSent = await prisma.reportDelivery.findFirst({
+        where: { channel: p.channel, status: 'SENT' },
+        orderBy: { sentAt: 'desc' },
+        select: { sentAt: true },
+      })
+      return {
+        channel: p.channel,
+        configured: readiness.configured,
+        label: readiness.label,
+        hint: readiness.hint,
+        lastSentAt: lastSent?.sentAt?.toISOString() ?? null,
       }
     }),
   )
@@ -69,6 +92,13 @@ export default async function PengaturanPage() {
         <QrisSettings
           enabled={raw.qrisEnabled === 'true'}
           imageName={raw.qrisImagePath}
+        />
+
+        <NotifikasiSettings
+          channels={notifChannels}
+          discordMasked={maskSecret(raw.discordWebhookUrl)}
+          telegramTokenMasked={maskSecret(raw.telegramBotToken)}
+          telegramChatId={raw.telegramChatId}
         />
       </main>
     </>

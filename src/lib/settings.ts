@@ -24,7 +24,17 @@ export const SETTING_DEFS = {
   receiptWidth: { schema: z.enum(['58', '80', 'a4']), default: '80', secret: false },
 
   timezone: { schema: z.string().min(1), default: 'Asia/Jakarta', secret: false },
-  installDate: { schema: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), default: '', secret: false },
+  /**
+   * Kosong sampai server pertama kali menyala. Nilai kosong HARUS sah menurut
+   * schema-nya: kalau tidak, `getSetting` jatuh ke `parse(default)` dan justru
+   * melempar untuk setting yang belum pernah diisi — persis keadaan yang
+   * fallback itu dimaksudkan untuk menyelamatkan.
+   */
+  installDate: {
+    schema: z.union([z.literal(''), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]),
+    default: '',
+    secret: false,
+  },
 
   qrisEnabled: { schema: boolString, default: 'false', secret: false },
   qrisImagePath: { schema: z.string(), default: '', secret: false },

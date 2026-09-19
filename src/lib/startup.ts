@@ -4,15 +4,24 @@ import { config } from './config'
 import { applyPragmas } from './db/prisma'
 import { checkDatabase, pruneExpiredSessions } from './db/maintenance'
 import { createLogger, pruneLogs } from './logger'
+import { enqueue } from './notify/queue'
+import { catchUpReportsSafe } from './report/service'
+import { startReportScheduler } from './report/scheduler'
 
 /**
  * ATURAN IMPOR FILE INI: apa pun yang diimpor di sini ikut ditelusuri webpack
  * saat `instrumentation.ts` dikompilasi untuk runtime non-Node. Jangan pernah
  * mengimpor modul dari `auth/` (bcryptjs, node:crypto) atau dependensi lain
  * yang tidak bisa di-resolve di luar Node — lihat src/lib/db/maintenance.ts.
+ *
+ * Rantai laporan di bawah aman menurut aturan itu: report/ → notify/ hanya
+ * memakai `fetch` dan Prisma, tidak ada kriptografi di jalurnya.
  */
 
 const log = createLogger('startup')
+
+/** Jeda sebelum catch-up, supaya boot server tidak berebut dengan jaringan. */
+const CATCHUP_START_DELAY_MS = 3_000
 
 /**
  * Tugas yang dijalankan sekali saat server menyala.
@@ -76,8 +85,24 @@ export async function runStartupTasks(now: Date = new Date()): Promise<StartupRe
     log.warn('prune log gagal', { error: e instanceof Error ? e.message : String(e) })
   }
 
-  // 4. Catch-up laporan menyusul di Fase 6. Titik pemanggilannya di sini,
-  //    non-blocking, setelah semua di atas selesai.
+  // 4. Catch-up laporan — mekanisme utama penjadwalan, bukan cadangan.
+  //
+  //    NON-BLOCKING dengan sengaja: pengiriman melibatkan jaringan, dan kasir
+  //    tidak boleh menunggu Discord untuk bisa membuka layar kasir. Kegagalannya
+  //    sudah ditelan di dalam catchUpReportsSafe.
+  //
+  //    Jeda singkat memberi server kesempatan selesai boot lebih dulu; timer-nya
+  //    di-unref supaya tidak pernah menahan proses tetap hidup.
+  try {
+    const delay = setTimeout(() => {
+      void enqueue(() => catchUpReportsSafe(new Date()))
+    }, CATCHUP_START_DELAY_MS)
+    delay.unref?.()
+
+    startReportScheduler()
+  } catch (e) {
+    log.error('gagal menjadwalkan catch-up laporan — sisanya tetap jalan', e)
+  }
 
   log.info('startup selesai', {
     ...report,

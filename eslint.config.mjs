@@ -14,6 +14,7 @@ const config = [
       '.next-test/**',
       '.next-e2e/**',
       '.next-qris/**',
+      '.next-reports/**',
       'node_modules/**',
       'data/**',
       'backups/**',

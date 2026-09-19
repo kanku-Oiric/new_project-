@@ -649,12 +649,14 @@ DELETE /api/expenses/:id                  PIN owner, hanya selama shift-nya OPEN
 
 **Laporan & AI**
 ```
-GET    /api/reports/daily?date=YYYY-MM-DD
-GET    /api/reports/weekly?week=YYYY-Www
-GET    /api/reports/monthly?month=YYYY-MM
-POST   /api/reports/send                  { kind, periodKey, channels? } → trigger=MANUAL
-GET    /api/reports/deliveries?status=&trigger=
-POST   /api/reports/deliveries/:id/retry
+GET    /api/reports/daily?date=YYYY-MM-DD    owner — dihitung ulang tiap diminta
+GET    /api/reports/weekly?week=YYYY-Www     owner — + perbandingan periode sebelumnya
+GET    /api/reports/monthly?month=YYYY-MM    owner — + perbandingan periode sebelumnya
+POST   /api/reports/send                  owner — { kind, periodKey, channels? } → trigger=MANUAL
+GET    /api/reports/deliveries?status=&trigger=   owner — + keadaan tiap saluran
+POST   /api/reports/deliveries/:id/retry  owner
+POST   /api/notifications/test            owner — { channel }, kirim pesan uji sungguhan
+                                          tidak menulis baris report_deliveries
 POST   /api/ai/insight                    owner — { kind, periodKey, refresh? }
                                           tanpa refresh: kembalikan ai_insights terbaru
                                           tanpa memanggil API sama sekali
@@ -743,8 +745,8 @@ Fase 2 lolos `test` + `typecheck` + `lint` + `build`, lalu setiap route menjawab
 | Lapisan | Yang diuji | Yang TIDAK bisa dilihat |
 |---|---|---|
 | **Unit** (`src/lib/**/*.test.ts`) | Matematika uang, waktu, state machine. Cepat, tanpa IO | Database, bundler, HTTP |
-| **Integrasi DB** (`tests/checkout.test.ts`, `tests/qris.test.ts`, `tests/db-integrity.test.ts`) | Atomicity, race, rollback, constraint. Memanggil fungsi service langsung | **Bundler dan route handler** — kode bisa benar tapi tidak pernah bisa dimuat Next.js |
-| **HTTP** (`tests/api-http.test.ts`, `tests/e2e-shift-refund.test.ts`, `tests/e2e-qris.test.ts`) | Server Next.js sungguhan: bundling, auth, Zod, status code, envelope error | Perilaku browser (klik, fokus, scanner) |
+| **Integrasi DB** (`tests/checkout.test.ts`, `tests/qris.test.ts`, `tests/catchup.test.ts`, `tests/db-integrity.test.ts`) | Atomicity, race, rollback, constraint, catch-up dengan jam palsu. Memanggil fungsi service langsung | **Bundler dan route handler** — kode bisa benar tapi tidak pernah bisa dimuat Next.js |
+| **HTTP** (`tests/api-http.test.ts`, `tests/e2e-shift-refund.test.ts`, `tests/e2e-qris.test.ts`, `tests/e2e-reports.test.ts`) | Server Next.js sungguhan: bundling, auth, Zod, status code, envelope error | Perilaku browser (klik, fokus, scanner) |
 | **Bentuk kode** (`src/lib/payment/no-auto-success.test.ts`) | Larangan struktural: tidak ada timer di jalur pembayaran, hanya satu berkas yang menulis `paidAt` | Apakah logikanya benar — ia hanya menjaga bentuknya |
 | **Manual browser** | Interaksi kasir sungguhan | — |
 

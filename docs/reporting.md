@@ -1,6 +1,6 @@
 # Laporan — Definisi & Perhitungan
 
-> Status: **Draft untuk review.** Pendamping `architecture.md` dan `database.md`.
+> Status: **Terpasang di Fase 6.** Definisi di §1–§6 sudah berjalan sebagai kode; §7.3 mencatat apa yang belum dipakai. Pendamping `architecture.md` dan `database.md`.
 
 Dokumen ini adalah **satu-satunya definisi** angka laporan. Kalau kode dan dokumen ini berbeda, salah satunya bug — dan yang diperbaiki harus disepakati, bukan diam-diam dibiarkan berbeda.
 
@@ -323,6 +323,22 @@ Skenario test wajib:
 | Tekan "Kirim laporan sekarang" dua kali untuk periode yang sama | Dua baris `MANUAL` berhasil, **tanpa error constraint** (§6.3) |
 
 Urutan pengiriman dari paling lama ke paling baru, satu per satu, dengan jeda antar-kirim untuk menghormati rate limit.
+
+Seluruh skenario di tabel itu ada sebagai test di `tests/catchup.test.ts`, dijalankan dengan jam palsu dan provider palsu — tidak ada satu pun request keluar saat test berjalan.
+
+### 7.3 Aturan waktu kirim, dan setting yang BELUM dipakai
+
+Aturan yang berlaku sekarang, satu kalimat: **periode yang sudah selesai dikirim segera setelah aplikasi menyadarinya** — entah saat server menyala (catch-up) atau saat scheduler berdetak.
+
+Konsekuensinya jujur disebutkan: kalau laptop menyala melewati tengah malam, laporan kemarin terkirim beberapa menit setelah pukul 00:00 WIB. Kalau laptop mati, laporan itu terkirim saat server dinyalakan besok pagi.
+
+Karena itu **`reportDailyTime`, `reportWeeklyDay`, dan `reportMonthlyDay` belum dipakai kode mana pun.** Ketiganya ada di tabel settings sejak Fase 1, dan sengaja dibiarkan tidak aktif alih-alih dipasang setengah jalan.
+
+Alasannya: menjadikannya jam kirim akan bertabrakan dengan §6.2. "Kirim laporan harian pukul 21:00" berarti mengirim hari yang belum berakhir — angkanya belum final dan toko mungkin masih buka. Sedangkan menjadikannya gerbang untuk hari kemarin akan melahirkan dua perilaku berbeda pada satu sistem: catch-up saat startup mengirim pukul 08:00 pagi, sementara scheduler menunggu sampai 21:00. Dua jalur dengan aturan berbeda persis yang dihindari §10.3 `architecture.md`.
+
+Pilihan yang tersisa kalau pemilik memang menginginkan jam tetap: gerbang itu harus berlaku untuk **kedua** jalur, termasuk catch-up saat startup — yang berarti laporan kemarin sengaja ditahan sampai malam ini. Itu keputusan pemilik toko, bukan keputusan yang pantas diambil diam-diam oleh kode. Sampai diputuskan, ketiga setting itu tidak muncul di UI mana pun, supaya tidak ada tombol yang tampak berpengaruh padahal tidak.
+
+Yang dipakai scheduler hanyalah jeda pemeriksaan: berdetak tiap menit, tetapi catch-up hanya benar-benar dijalankan kalau hari usaha berganti atau sudah lewat sepuluh menit sejak pemeriksaan terakhir (`shouldRunCatchUp`). Database yang sama sedang dipakai kasir; enam query tiap menit hanya untuk mendapati tidak ada yang perlu dikirim adalah gangguan tanpa manfaat.
 
 ---
 
