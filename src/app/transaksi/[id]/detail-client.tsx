@@ -6,6 +6,7 @@ import { outcomeMessage, postJson } from '@/lib/api-client'
 import { formatRupiah } from '@/lib/money'
 import { MANUAL_REFUND_WARNING } from '@/lib/transaction/void-rules'
 import { OwnerPinDialog } from '@/components/ui/owner-pin-dialog'
+import { useIdempotencyKey } from '@/lib/use-idempotency-key'
 
 export interface DetailItem {
   id: string
@@ -306,6 +307,8 @@ function RefundConfirm({
   onDone: () => void
 }) {
   const [open, setOpen] = useState(false)
+  // Refund sebagian yang diulang tidak boleh menjadi dua kali uang keluar.
+  const keyFor = useIdempotencyKey()
 
   if (!open) {
     return (
@@ -331,15 +334,21 @@ function RefundConfirm({
       onConfirm={async (ownerPin, reason) => {
         setBusy(true)
         setError(null)
+
+        // PIN sengaja TIDAK ikut menentukan kunci: kalau ia ikut, salah ketik PIN
+        // lalu mengulang akan menghasilkan kunci baru dan refund kedua. Yang
+        // menentukan adalah apa yang dikembalikan dan alasannya.
+        const payload = { items, method: 'CASH', reason }
+        const idempotencyKey = keyFor(payload)
+
         const outcome = await postJson(`/api/transactions/${transactionId}/refunds`, {
           ownerPin,
-          items,
-          method: 'CASH',
-          reason,
+          ...payload,
+          ...(idempotencyKey ? { idempotencyKey } : {}),
         })
         setBusy(false)
         if (outcome.kind !== 'ok') {
-          setError(outcomeMessage(outcome, true))
+          setError(outcomeMessage(outcome, true, idempotencyKey !== null))
           return
         }
         setOpen(false)

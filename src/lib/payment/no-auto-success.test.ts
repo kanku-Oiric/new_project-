@@ -69,8 +69,23 @@ describe('tidak ada jalur otomatis menuju PAID', () => {
   })
 
   it('hanya SATU berkas di seluruh src yang menulis paidAt', () => {
+    // MEMBACA paidAt tidak dilarang, MENULISNYA yang dilarang.
+    //
+    // Penjaga ini dulu menandai setiap kemunculan `paidAt:` dan karena itu ikut
+    // menangkap `select: { paidAt: true }` di dashboard — kode yang hanya
+    // membaca, untuk mengetahui apakah sebuah QRIS pernah benar-benar dibayar.
+    // Penjaga yang menangkap hal yang tidak berbahaya akan dilonggarkan
+    // seseorang di kemudian hari, dan saat itu ia berhenti menjaga apa pun.
+    //
+    // Bentuk yang diizinkan tanpa dianggap menulis: `paidAt: true` dan
+    // `paidAt: false` (Prisma `select`). Semua nilai lain dihitung sebagai
+    // penulisan — termasuk `paidAt: now` dan `paidAt: null`.
     const writers = sourceFiles('src')
-      .filter(({ text }) => /paidAt\s*:/.test(stripComments(text)))
+      .filter(({ text }) => {
+        const bersih = stripComments(text)
+        const matches = [...bersih.matchAll(/paidAt\s*:\s*([A-Za-z0-9_.]+)/g)]
+        return matches.some((m) => m[1] !== 'true' && m[1] !== 'false')
+      })
       .map(({ file }) => file)
 
     // `settleTransactionInTx` adalah satu-satunya penulis. Tunai, QRIS statis,
@@ -78,6 +93,26 @@ describe('tidak ada jalur otomatis menuju PAID', () => {
     // apa pun yang benar sekarang tetap benar setelah provider asli masuk
     // (docs/qris.md §6).
     expect(writers).toEqual(['src/lib/checkout/index.ts'])
+  })
+
+  it('penjaga penulis paidAt benar-benar menangkap penulisan baru', () => {
+    // Penjaga yang tidak pernah diuji tidak bisa dipercaya. Ini memastikan
+    // pelonggaran di test sebelumnya tidak membuatnya berhenti menangkap
+    // penulisan sungguhan.
+    const contoh = [
+      'await tx.payment.update({ data: { paidAt: now } })',
+      'data: { paidAt: new Date() }',
+      'await tx.payment.updateMany({ data: { paidAt: null } })',
+    ]
+    const bacaan = ['select: { paidAt: true }', 'select: { paidAt: false }']
+
+    const menulis = (text: string): boolean =>
+      [...text.matchAll(/paidAt\s*:\s*([A-Za-z0-9_.]+)/g)].some(
+        (m) => m[1] !== 'true' && m[1] !== 'false',
+      )
+
+    for (const c of contoh) expect(menulis(c)).toBe(true)
+    for (const b of bacaan) expect(menulis(b)).toBe(false)
   })
 
   it('status PAID hanya ditulis lewat guarded update', () => {

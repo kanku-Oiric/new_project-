@@ -5,6 +5,7 @@ import { PinSchema } from '@/lib/auth/pin'
 import { requireSession } from '@/lib/auth/session'
 import { RefundMethodSchema } from '@/lib/enums'
 import { ConflictError } from '@/lib/errors'
+import { IdempotencyKeySchema } from '@/lib/idempotency'
 import { findOpenShift } from '@/lib/shift/service'
 import { createRefund } from '@/lib/transaction/service'
 
@@ -22,6 +23,10 @@ const RefundSchema = z.object({
     .min(1, 'Pilih minimal satu item untuk di-refund'),
   method: RefundMethodSchema.default('CASH'),
   reason: z.string().trim().min(3, 'Alasan refund wajib diisi').max(300),
+  // Refund sebagian yang diulang karena response hilang akan lolos guard
+  // kumulatif (1 dari 3, lalu 1 dari 3 lagi = 2 terkembalikan). Kunci ini yang
+  // menahannya (src/lib/idempotency.ts).
+  idempotencyKey: IdempotencyKeySchema.optional(),
 })
 
 export const POST = route(
@@ -53,7 +58,8 @@ export const POST = route(
       body.items,
       body.method,
       body.reason,
+      body.idempotencyKey ?? null,
     )
-    return ok(result, 201)
+    return ok(result, result.replayed ? 200 : 201)
   },
 )

@@ -32,13 +32,15 @@
   "include": [
     "**/*.ts",
     "**/*.tsx",
+    ".next-build/types/**/*.ts",
     ".next-e2e/types/**/*.ts",
+    ".next-idem/types/**/*.ts",
     ".next-qris/types/**/*.ts",
     ".next-reports/types/**/*.ts",
     ".next-test/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-build/types/**/*.ts"
+    ".next-f7/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

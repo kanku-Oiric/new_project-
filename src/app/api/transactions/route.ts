@@ -4,6 +4,7 @@ import { requireSession } from '@/lib/auth/session'
 import { ConflictError } from '@/lib/errors'
 import { checkout } from '@/lib/checkout'
 import { PaymentMethodSchema } from '@/lib/enums'
+import { IdempotencyKeySchema } from '@/lib/idempotency'
 import { findOpenShift } from '@/lib/shift/service'
 
 export const dynamic = 'force-dynamic'
@@ -29,6 +30,9 @@ const CheckoutSchema = z
     method: PaymentMethodSchema,
     amountTendered: z.number().int().min(0).optional(),
     note: z.string().trim().max(500).optional(),
+    // Kunci sekali-pakai. Tanpa ini, response yang hilang di WiFi toko membuat
+    // kasir menekan Bayar dua kali dan tercatat dua penjualan (src/lib/idempotency.ts).
+    idempotencyKey: IdempotencyKeySchema.optional(),
   })
   .refine((v) => v.method !== 'CASH' || v.amountTendered !== undefined, {
     message: 'Nominal uang yang diterima wajib diisi untuk pembayaran tunai',
@@ -56,5 +60,8 @@ export const POST = route('transactions.create', async (req) => {
     deviceLabel: deviceLabel(req),
   })
 
-  return ok(result, 201)
+  // 200, bukan 201: request ini tidak membuat apa pun. Bedanya bukan kosmetik —
+  // ia yang memberi tahu layar kasir bahwa penjualannya sudah tersimpan sejak
+  // tadi, sehingga kasir tidak menyangka baru saja terjadi penjualan kedua.
+  return ok(result, result.replayed ? 200 : 201)
 })

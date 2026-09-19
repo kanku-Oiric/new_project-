@@ -4,13 +4,16 @@ import { config } from '../config'
 import { prisma } from '../db/prisma'
 import { applyStockMovement } from '../db/stock'
 import { nextNumber } from '../db/counter'
+import { isUniqueViolation } from '../db/errors'
 import { ConflictError, NotFoundError } from '../errors'
+import { canonicalJson } from '../idempotency'
+import { fingerprint } from '../idempotency-server'
 import {
   computeRefund,
   type RefundableItem,
   type RefundLineInput,
 } from '../refund'
-import { RefundMethodSchema, type PaymentMethod, type PaymentStatus, type ShiftStatus, type TransactionStatus } from '../enums'
+import { RefundMethodSchema, type PaymentMethod, type PaymentStatus, type RefundMethod, type ShiftStatus, type TransactionStatus } from '../enums'
 import { toBusinessDate } from '../time'
 import { checkVoidEligibility, voidNeedsManualRefund } from './void-rules'
 
@@ -170,6 +173,63 @@ export interface RefundResult {
   refundNumber: string
   amount: number
   cogsAmount: number
+  /**
+   * `true` berarti refund ini sudah pernah tersimpan dan request ini tidak
+   * mengeluarkan uang kedua. Lihat src/lib/idempotency.ts.
+   */
+  replayed: boolean
+}
+
+/**
+ * Sidik jari isi refund.
+ *
+ * Transaksi asal ikut, karena kunci yang sama untuk transaksi lain adalah bug,
+ * bukan pengulangan. Shift TIDAK ikut: kalau response hilang lalu shift berganti,
+ * refundnya sudah membebani laci yang lama dan harus tetap di sana.
+ */
+function refundFingerprint(
+  transactionId: string,
+  requested: RefundLineInput[],
+  method: string,
+  reason: string,
+): string {
+  return fingerprint({
+    transactionId,
+    items: requested
+      .map((r) => canonicalJson({ transactionItemId: r.transactionItemId, qty: r.qty }))
+      .sort(),
+    method,
+    reason,
+  })
+}
+
+/**
+ * Baca refund yang kuncinya sudah pernah dipakai. `null` = belum pernah.
+ *
+ * Penolakan di sini sama alasannya dengan di checkout: kunci yang sama dengan isi
+ * berbeda tidak boleh dijawab dengan data refund lain, karena kasir akan mengira
+ * uang yang keluar adalah yang baru saja ia maksud.
+ */
+async function readRefundByKey(
+  key: string,
+  expectedFingerprint: string,
+): Promise<RefundResult | null> {
+  const refund = await prisma.refund.findUnique({ where: { idempotencyKey: key } })
+  if (!refund) return null
+
+  if (refund.idempotencyFingerprint !== expectedFingerprint) {
+    throw new ConflictError(
+      'Kunci refund ini sudah dipakai untuk refund yang berbeda. Muat ulang halaman transaksi sebelum mengulang.',
+    )
+  }
+
+  return {
+    refundId: refund.id,
+    refundNumber: refund.refundNumber,
+    amount: refund.amount,
+    cogsAmount: refund.cogsAmount,
+    replayed: true,
+  }
 }
 
 /**
@@ -186,9 +246,62 @@ export async function createRefund(
   requested: RefundLineInput[],
   method: string,
   reason: string,
+  idempotencyKey: string | null = null,
   now: Date = new Date(),
 ): Promise<RefundResult> {
   const refundMethod = RefundMethodSchema.parse(method)
+  const print = idempotencyKey
+    ? refundFingerprint(transactionId, requested, refundMethod, reason)
+    : ''
+
+  if (idempotencyKey) {
+    const replayed = await readRefundByKey(idempotencyKey, print)
+    if (replayed) return replayed
+  }
+
+  try {
+    return await refundInTransaction({
+      actor,
+      transactionId,
+      shiftId,
+      requested,
+      refundMethod,
+      reason,
+      idempotencyKey,
+      print,
+      now,
+    })
+  } catch (e) {
+    // Sama seperti checkout: indeks unique di DB yang memutuskan pemenang saat
+    // dua request serentak membawa kunci yang sama.
+    if (idempotencyKey && isUniqueViolation(e)) {
+      const replayed = await readRefundByKey(idempotencyKey, print)
+      if (replayed) return replayed
+    }
+    throw e
+  }
+}
+
+/**
+ * Satu objek, bukan sembilan parameter berjejer: di antaranya ada empat `string`
+ * berturut-turut, dan TypeScript tidak akan menangkap kalau dua di antaranya
+ * tertukar.
+ */
+interface RefundExecution {
+  actor: PrivilegedActor
+  transactionId: string
+  shiftId: string
+  requested: RefundLineInput[]
+  refundMethod: RefundMethod
+  reason: string
+  idempotencyKey: string | null
+  print: string
+  now: Date
+}
+
+async function refundInTransaction(exec: RefundExecution): Promise<RefundResult> {
+  const { actor, transactionId, shiftId, requested, refundMethod, reason, idempotencyKey, print, now } =
+    exec
 
   return prisma.$transaction(async (tx) => {
     const trx = await tx.transaction.findUnique({
@@ -237,6 +350,8 @@ export async function createRefund(
         reason,
         authorizedByUserId: actor.authorizedByUserId,
         createdByUserId: actor.userId,
+        idempotencyKey,
+        idempotencyFingerprint: idempotencyKey ? print : null,
         items: {
           create: totals.lines.map((l) => ({
             transactionItemId: l.transactionItemId,
@@ -294,6 +409,7 @@ export async function createRefund(
       refundNumber,
       amount: totals.amount,
       cogsAmount: totals.cogsAmount,
+      replayed: false,
     }
   })
 }

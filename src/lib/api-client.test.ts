@@ -121,4 +121,20 @@ describe('outcomeMessage', () => {
     const msg = outcomeMessage({ kind: 'network-error', message: 'Tidak bisa menghubungi server.' }, false)
     expect(msg).not.toContain('JANGAN')
   })
+
+  it('dengan kunci sekali-pakai, kasir justru DISURUH mengulang', () => {
+    // Setelah ada kunci, "periksa riwayat dulu" bukan lagi nasihat terbaik: di
+    // tengah antrean, menyuruh kasir membuka halaman lain jauh lebih berat
+    // daripada menekan tombol yang sama sekali lagi — dan pengulangannya aman.
+    const msg = outcomeMessage({ kind: 'network-error', message: 'Tidak ada jawaban.' }, true, true)
+    expect(msg).toContain('Coba lagi')
+    expect(msg).not.toContain('JANGAN')
+  })
+
+  it('tanpa menyatakan kunci, peringatan lama yang berlaku', () => {
+    // Defaultnya hati-hati dengan sengaja: pemanggil yang lupa menyatakan bahwa
+    // ia mengirim kunci tidak boleh mendapat janji aman yang tidak ditopang.
+    const msg = outcomeMessage({ kind: 'server-error', status: 500, message: 'Gagal.' }, true)
+    expect(msg).toContain('JANGAN ulangi')
+  })
 })

@@ -170,6 +170,14 @@ model Transaction {
   voidReason     String?
   cancelReason   String? // diisi saat auto-cancel di penutupan shift
 
+  // Kunci sekali-pakai dari kasir. Nullable + @unique: SQLite mengizinkan banyak
+  // NULL pada unique, jadi client lama yang tidak mengirim kunci tetap jalan,
+  // sementara yang mengirim kunci dijaga DB — bukan cuma dijaga kode.
+  idempotencyKey         String? @unique
+  // Sidik jari isi keranjang saat kunci itu dipakai. Kunci yang sama dengan isi
+  // berbeda DITOLAK, bukan dijawab dengan struk transaksi lain.
+  idempotencyFingerprint String?
+
   shift    Shift             @relation(fields: [shiftId], references: [id], onDelete: Restrict)
   cashier  User              @relation(fields: [cashierId], references: [id], onDelete: Restrict)
   items    TransactionItem[]
@@ -251,6 +259,11 @@ model Refund {
   authorizedByUserId String // owner yang memberi PIN
   createdByUserId    String // kasir yang menjalankan
   createdAt          DateTime @default(now())
+
+  // Sama seperti di Transaction: refund sebagian yang diulang karena response
+  // hilang tidak boleh menjadi dua kali uang keluar.
+  idempotencyKey         String? @unique
+  idempotencyFingerprint String?
 
   transaction Transaction  @relation(fields: [transactionId], references: [id], onDelete: Restrict)
   shift       Shift        @relation(fields: [shiftId], references: [id], onDelete: Restrict)

@@ -11,6 +11,7 @@ import { QrisPending } from '@/components/kasir/qris-pending'
 import type { CartItem, KasirProduct } from '@/components/kasir/types'
 import { Nav } from '@/components/ui/nav'
 import type { Role } from '@/lib/enums'
+import { useIdempotencyKey } from '@/lib/use-idempotency-key'
 
 interface CheckoutResponse {
   transactionId: string
@@ -20,6 +21,8 @@ interface CheckoutResponse {
   netTotal: number
   changeAmount: number | null
   negativeStock: { productName: string; stockAfter: number }[]
+  /** `true` = transaksi ini sudah tersimpan sebelumnya; ini bukan penjualan baru. */
+  replayed?: boolean
 }
 
 interface ConfirmResponse {
@@ -33,6 +36,12 @@ interface LastSale {
   transactionId: string
   changeAmount: number | null
   negativeStock: { productName: string; stockAfter: number }[]
+  /**
+   * Penjualan ini sudah tersimpan pada percobaan sebelumnya. Kasir harus tahu,
+   * supaya ia tidak menyangka baru saja terjadi penjualan kedua dan lalu
+   * "memperbaiki"-nya dengan void yang sebenarnya tidak perlu.
+   */
+  replayed?: boolean
 }
 
 /** Transaksi QRIS yang sudah dibuat dan menunggu konfirmasi kasir. */
@@ -68,6 +77,9 @@ export function KasirClient({
   const [payError, setPayError] = useState<string | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   const [lastSale, setLastSale] = useState<LastSale | null>(null)
+  // Kunci sekali-pakai per isi keranjang: menekan Bayar dua kali karena jawaban
+  // server tidak sampai tidak lagi bisa mencatat dua penjualan.
+  const keyFor = useIdempotencyKey()
   const [pendingQris, setPendingQris] = useState<PendingQris | null>(null)
   const [qrisStatus, setQrisStatus] = useState<string | null>(null)
 
@@ -205,7 +217,7 @@ export function KasirClient({
       setBusy(true)
       setPayError(null)
 
-      const outcome = await postJson<CheckoutResponse>('/api/transactions', {
+      const payload = {
         lines: items.map((i) => ({
           productId: i.productId,
           qty: i.qty,
@@ -216,14 +228,26 @@ export function KasirClient({
         // Hanya tunai punya uang yang diserahkan. Untuk QRIS, mengirim angka
         // apa pun di sini hanya akan membingungkan pembacaan data nanti.
         ...(method === 'CASH' ? { amountTendered } : {}),
+      }
+
+      // Kunci dihitung DARI payload, jadi ia otomatis berganti begitu keranjang,
+      // diskon, metode, atau uang yang diserahkan berubah.
+      const idempotencyKey = keyFor(payload)
+
+      const outcome = await postJson<CheckoutResponse>('/api/transactions', {
+        ...payload,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
       })
 
       if (outcome.kind !== 'ok') {
-        // Pesannya dibedakan per keadaan: 4xx aman diperbaiki lalu diulang,
-        // sedangkan 5xx dan kegagalan jaringan TIDAK — pada keduanya transaksi
-        // mungkin sudah tersimpan, dan mengulang bisa berarti pelanggan
-        // terbayar dua kali.
-        setPayError(outcomeMessage(outcome, true))
+        // 4xx: datanya yang salah, aman diperbaiki lalu diulang.
+        //
+        // 5xx dan kegagalan jaringan: transaksinya MUNGKIN sudah tersimpan.
+        // Dengan kunci sekali-pakai, mengulang tidak lagi berisiko mencatat
+        // penjualan kedua — jadi kasir disuruh mengulang, bukan disuruh
+        // memeriksa riwayat satu per satu. Tanpa kunci (browser tanpa sumber
+        // acak), peringatan lamanya yang berlaku.
+        setPayError(outcomeMessage(outcome, true, idempotencyKey !== null))
         setBusy(false)
         return
       }
@@ -249,9 +273,10 @@ export function KasirClient({
         transactionId: result.transactionId,
         changeAmount: result.changeAmount,
         negativeStock: result.negativeStock ?? [],
+        replayed: result.replayed === true,
       })
     },
-    [items, totals, transactionDiscount, finishSale],
+    [items, totals, transactionDiscount, finishSale, keyFor],
   )
 
   /**
@@ -344,6 +369,11 @@ export function KasirClient({
           <span className="font-medium text-kasir-accent-strong">
             Tersimpan {lastSale.trxNumber}
           </span>
+          {lastSale.replayed && (
+            <span className="text-kasir-text">
+              Sudah tersimpan sebelumnya — tidak dicatat dua kali.
+            </span>
+          )}
           {lastSale.changeAmount !== null && lastSale.changeAmount > 0 && (
             <span className="text-kasir-text">Kembalian Rp {lastSale.changeAmount.toLocaleString('id-ID')}</span>
           )}

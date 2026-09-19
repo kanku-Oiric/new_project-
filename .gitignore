@@ -16,6 +16,8 @@ next-env.d.ts
 .next-e2e/
 .next-qris/
 .next-reports/
+.next-idem/
+.next-f7/
 .next-build/
 
 # ── Data toko — JANGAN pernah masuk version control ──────────────────────────

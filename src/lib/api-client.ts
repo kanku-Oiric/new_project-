@@ -85,21 +85,42 @@ export function classifyResponse<T>(
   }
 }
 
-/** Pesan siap tampil untuk kasir, sesuai tindakan yang benar per keadaan. */
-export function outcomeMessage(outcome: ApiOutcome<unknown>, mutating: boolean): string {
+/**
+ * Pesan siap tampil untuk kasir, sesuai tindakan yang benar per keadaan.
+ *
+ * `retrySafe` menandai request yang membawa kunci sekali-pakai
+ * (src/lib/idempotency.ts). Bedanya besar bagi kasir yang sedang menghadapi
+ * pelanggan:
+ *
+ *   tanpa kunci  "JANGAN ulangi — periksa riwayat dulu". Benar, tapi berat:
+ *                di tengah antrean, kasir harus membuka halaman lain dan
+ *                mencari transaksi yang mungkin ada.
+ *   dengan kunci "Coba lagi". Server akan mengembalikan transaksi yang sama
+ *                kalau ternyata sudah tersimpan, jadi tidak ada penjualan kedua
+ *                yang bisa tercipta.
+ *
+ * Defaultnya `false` dengan sengaja: pemanggil harus MENYATAKAN bahwa ia
+ * mengirim kunci. Kalau lupa, yang muncul adalah peringatan yang lebih hati-hati,
+ * bukan janji aman yang tidak ditopang apa pun.
+ */
+export function outcomeMessage(
+  outcome: ApiOutcome<unknown>,
+  mutating: boolean,
+  retrySafe = false,
+): string {
+  const advice = retrySafe
+    ? 'Coba lagi — kalau transaksinya ternyata sudah tersimpan, sistem mengembalikan transaksi yang sama dan tidak mencatatnya dua kali.'
+    : 'JANGAN ulangi pembayaran — periksa dulu di riwayat transaksi apakah transaksi ini sudah tersimpan.'
+
   switch (outcome.kind) {
     case 'ok':
       return ''
     case 'client-error':
       return outcome.message
     case 'server-error':
-      return mutating
-        ? `${outcome.message} JANGAN ulangi pembayaran — periksa dulu di riwayat transaksi apakah transaksi ini sudah tersimpan.`
-        : outcome.message
+      return mutating ? `${outcome.message} ${advice}` : outcome.message
     case 'network-error':
-      return mutating
-        ? `${outcome.message} JANGAN ulangi pembayaran — periksa dulu di riwayat transaksi apakah transaksi ini sudah tersimpan.`
-        : outcome.message
+      return mutating ? `${outcome.message} ${advice}` : outcome.message
   }
 }
 
