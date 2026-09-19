@@ -148,6 +148,13 @@ beforeAll(async () => {
         ...process.env,
         DATABASE_URL: dbUrl,
         NODE_ENV: 'development',
+        // Folder backup sendiri. WAJIB di setiap test yang menjalankan server:
+        // tanpa ini, backup startup dan backup tutup shift menulis snapshot
+        // DATABASE UJI ke folder backups/ toko, lalu memangkas backup asli untuk
+        // memberi tempat. Berkasnya tidak bisa dibedakan dari backup sungguhan,
+        // dan prosedur restore di README ("pilih yang paling baru") akan
+        // mengembalikan database kosong berisi "Kasir E2E".
+        BACKUP_DIR: path.join(tmpDir, 'backups'),
         // Folder build sendiri: `next dev` milik test tidak boleh merusak dev
         // server yang mungkin sedang dipakai orang.
         NEXT_DIST_DIR: '.next-e2e',

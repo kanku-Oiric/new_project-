@@ -710,6 +710,28 @@ Tiga hal yang perlu disebut:
 
 Hasilnya dicatat sebagai `BACKUP_RUN` di audit log, **termasuk saat gagal** — pencatatannya ada di luar blok sukses, karena kejadian yang paling perlu terekam justru kegagalan.
 
+### Peringatan: test tidak boleh menulis ke `backups/` toko
+
+Cacat yang ditemukan setelah Fase 7 selesai, dengan seluruh 431 test hijau:
+
+1. test HTTP menjalankan `next dev` dengan `DATABASE_URL` ke database sementara — tapi **tanpa mengalihkan folder backup**,
+2. startup dan tutup shift menjalankan backup otomatis,
+3. snapshot **database uji** ditulis ke `backups/` milik toko,
+4. prune menyisakan 30 terbaru, jadi backup toko yang asli terhapus untuk memberi tempat,
+5. `backups/` berakhir memuat 30 berkas yang semuanya berisi `Kasir E2E` dengan nol transaksi,
+6. dan prosedur restore di README (`pilih yang paling baru`) akan mengembalikan **database kosong** ke atas data toko.
+
+Tidak satu pun dari keenam langkah itu membuat test merah. Karena itu penjaganya sekarang ada di `tests/test-hygiene.test.ts`, empat lapis:
+
+| Penjaga | Menangkap |
+|---|---|
+| Setiap test yang menjalankan server wajib `BACKUP_DIR` | Test baru yang lupa mengalihkannya |
+| Setiap test yang memanggil `runBackup`/`closeShift` wajib `BACKUP_DIR` | Jalur non-HTTP |
+| Tidak ada test yang menyebut `backups` atau `data/pos.db` tanpa `tmpDir` | Penulisan langsung |
+| `backups/` toko tidak memuat nama fixture test | **Keadaan nyata**, bukan bentuk kode — menangkap sisa dari run yang melewati ketiga penjaga di atas |
+
+`BACKUP_DIR` di `.env.example` ada untuk ini, dan dibiarkan kosong untuk toko.
+
 ### Peringatan: urutan nama ≠ urutan waktu
 
 Pemangkasan dulu mengurutkan berkas berdasarkan nama, dengan alasan "nama bercap tanggal berarti urutan leksikal sama dengan urutan waktu". Itu salah pada kasus yang paling tidak boleh salah:

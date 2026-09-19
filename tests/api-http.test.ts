@@ -123,6 +123,13 @@ beforeAll(async () => {
         // variabel yang sudah ada.
         DATABASE_URL: dbUrl,
         NODE_ENV: 'development',
+        // Folder backup sendiri. WAJIB di setiap test yang menjalankan server:
+        // tanpa ini, backup startup dan backup tutup shift menulis snapshot
+        // DATABASE UJI ke folder backups/ toko, lalu memangkas backup asli untuk
+        // memberi tempat. Berkasnya tidak bisa dibedakan dari backup sungguhan,
+        // dan prosedur restore di README ("pilih yang paling baru") akan
+        // mengembalikan database kosong berisi "Kasir E2E".
+        BACKUP_DIR: path.join(tmpDir, 'backups'),
         // Folder build terpisah. Tanpa ini, `next dev` milik test menulis ke
         // `.next` yang sama dengan dev server yang mungkin sedang dipakai orang
         // lain, lalu isinya tercampur dengan output `next build` dan halaman
