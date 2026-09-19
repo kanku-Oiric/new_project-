@@ -786,6 +786,25 @@ rm -rf .next
 
 **Aturan:** jangan menjalankan `build` saat `dev` berjalan, dan sebaliknya. Kalau terlanjur, hapus `.next` — tidak ada data toko di sana, isinya murni hasil kompilasi.
 
+**Varian yang sama berbahayanya: DUA `next dev` sekaligus.** Gejalanya sedikit berbeda dan lebih membingungkan:
+
+```
+⨯ [Error: ENOENT: no such file or directory, open '.next\serverpp\kasir\page.js'] { page: '/kasir' }
+GET /kasir 500
+```
+
+Server kedua tidak gagal karena portnya terpakai — ia pindah ke port lain lalu **tetap menulis ke `.next` yang sama**, dan proses pertama kehilangan berkas yang sedang dilayaninya. Yang menekan tombol di browser melihat halaman 500 atau layar kosong, padahal tidak ada satu baris kode pun yang salah. Mematikan server kedua **tidak** memperbaikinya: `.next` sudah terlanjur ditimpa.
+
+Penandanya paling mudah dilihat di log: dua baris `[startup] startup selesai` dengan selisih waktu beberapa menit, dan dua berkas backup baru di `backups/` — padahal server "hanya" dijalankan sekali.
+
+Penanganannya: hentikan SEMUA proses `node`, hapus `.next`, lalu jalankan satu server.
+
+```bash
+npm run dev
+```
+
+Di toko, penyebab paling umumnya adalah `start-toko.bat` yang terlanjur dobel-klik dua kali.
+
 `tests/api-http.test.ts` menjalankan `next dev` sungguhan, jadi ia memakai folder build sendiri lewat `NEXT_DIST_DIR=.next-test` dan **tidak pernah** merusak dev server yang sedang dipakai.
 
 ---
