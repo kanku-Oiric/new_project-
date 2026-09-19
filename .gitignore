@@ -4,6 +4,7 @@ node_modules/
 .next-e2e/
 .next-qris/
 .next-reports/
+.next-build/
 out/
 build/
 next-env.d.ts

@@ -57,6 +57,7 @@ export default async function KasirPage() {
       initialProducts={products}
       initialKategori={kategori.map((k) => k.kategori)}
       cashierName={session.name}
+      role={session.role}
       qris={{
         configured: qrisReadiness.configured,
         label: qrisReadiness.label,

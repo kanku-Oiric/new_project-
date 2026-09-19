@@ -9,6 +9,8 @@ import { PaymentDialog } from '@/components/kasir/payment-dialog'
 import { ProductPanel } from '@/components/kasir/product-panel'
 import { QrisPending } from '@/components/kasir/qris-pending'
 import type { CartItem, KasirProduct } from '@/components/kasir/types'
+import { Nav } from '@/components/ui/nav'
+import type { Role } from '@/lib/enums'
 
 interface CheckoutResponse {
   transactionId: string
@@ -45,12 +47,14 @@ export function KasirClient({
   initialProducts,
   initialKategori,
   cashierName,
+  role,
   qris,
   qrisImageUrl,
 }: {
   initialProducts: KasirProduct[]
   initialKategori: string[]
   cashierName: string
+  role: Role
   qris: { configured: boolean; label: string; hint: string | null }
   qrisImageUrl: string | null
 }) {
@@ -324,10 +328,10 @@ export function KasirClient({
 
   return (
     <div className="flex h-dvh flex-col">
-      <header className="flex items-center justify-between border-b border-kasir-border bg-kasir-surface px-4 py-2">
-        <h1 className="text-base font-semibold text-kasir-text">Kasir</h1>
-        <span className="text-sm text-kasir-muted">{cashierName}</span>
-      </header>
+      {/* Navigasi yang sama dengan halaman lain. Layar kasir tidak boleh jadi
+          jalan buntu: dari sini kasir harus bisa membuka shift, mencatat
+          pengeluaran, membuka riwayat, dan menyerahkan layar ke rekannya. */}
+      <Nav role={role} userName={cashierName} />
 
       {banner && (
         <p role="alert" className="bg-amber-50 px-4 py-2 text-sm text-kasir-warning">

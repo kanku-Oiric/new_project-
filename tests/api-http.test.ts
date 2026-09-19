@@ -351,3 +351,37 @@ describe('POST /api/transactions lewat HTTP', () => {
     expect(res.status).toBe(404)
   }, 60_000)
 })
+
+describe('layar kasir punya jalan keluar', () => {
+  /**
+   * Layar kasir sempat dirender tanpa navigasi sama sekali: headernya hanya
+   * tulisan, bukan tautan. Akibatnya kasir yang sudah masuk tidak bisa membuka
+   * shift, mencatat pengeluaran, memeriksa riwayat, apalagi menyerahkan layar
+   * ke rekannya — kecuali dengan mengetik alamat. Test ini menjaga supaya
+   * layar itu tidak pernah kembali menjadi jalan buntu.
+   */
+  it('HTML /kasir memuat tautan ke halaman lain dan tombol keluar', async () => {
+    const res = await fetch(`${baseUrl}/kasir`, { headers: { Cookie: cookie } })
+    expect(res.status).toBe(200)
+
+    const html = await res.text()
+    for (const href of ['/shift', '/pengeluaran', '/transaksi', '/ganti-pin']) {
+      expect(html, `tautan ke ${href} hilang dari layar kasir`).toContain(`href="${href}"`)
+    }
+    expect(html).toContain('Keluar')
+  }, 60_000)
+
+  it('kasir tidak melihat tautan khusus pemilik', async () => {
+    const res = await fetch(`${baseUrl}/kasir`, { headers: { Cookie: cookie } })
+    const html = await res.text()
+
+    // Menyembunyikan tautan bukan otorisasi — itu tetap ditegakkan server di
+    // tiap halaman. Ini soal layar kasir yang tidak perlu dipenuhi menu yang
+    // akan menolaknya.
+    for (const href of ['/laporan', '/pengaturan', '/audit', '/produk']) {
+      expect(html, `tautan ${href} seharusnya tidak muncul untuk kasir`).not.toContain(
+        `href="${href}"`,
+      )
+    }
+  }, 60_000)
+})

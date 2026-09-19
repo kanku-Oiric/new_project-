@@ -6,7 +6,7 @@ import { getSession } from '@/lib/auth/session'
 import { getSetting } from '@/lib/settings'
 import { formatRupiah } from '@/lib/money'
 import { toBusinessDate } from '@/lib/time'
-import { LogoutButton } from './logout-button'
+import { LogoutButton } from '@/components/ui/logout-button'
 
 export const dynamic = 'force-dynamic'
 

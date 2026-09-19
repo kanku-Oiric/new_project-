@@ -34,10 +34,11 @@
     "**/*.tsx",
     ".next-e2e/types/**/*.ts",
     ".next-qris/types/**/*.ts",
+    ".next-reports/types/**/*.ts",
     ".next-test/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-reports/types/**/*.ts"
+    ".next-build/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
