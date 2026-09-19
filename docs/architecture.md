@@ -789,7 +789,7 @@ rm -rf .next
 **Varian yang sama berbahayanya: DUA `next dev` sekaligus.** Gejalanya sedikit berbeda dan lebih membingungkan:
 
 ```
-⨯ [Error: ENOENT: no such file or directory, open '.next\serverpp\kasir\page.js'] { page: '/kasir' }
+⨯ [Error: ENOENT: no such file or directory, open '.next/server/app/kasir/page.js'] { page: '/kasir' }
 GET /kasir 500
 ```
 
