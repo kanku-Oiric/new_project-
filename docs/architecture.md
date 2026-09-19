@@ -45,7 +45,7 @@ Yang justru wajib benar dan mendapat porsi terbesar di dokumen ini: **atomicity 
 | Hash PIN | `bcryptjs` | Pure JS — tidak ada native build yang gagal di Windows |
 | Docker | ❌ tidak dipakai | `npm install && npm run dev` harus cukup |
 
-`DATABASE_URL="file:../data/pos.db"` — relatif terhadap folder `prisma/`, sehingga file DB berada di `<root>/data/pos.db`.
+`DATABASE_URL="file:../data/pos.db?connection_limit=1"` — relatif terhadap folder `prisma/`, sehingga file DB berada di `<root>/data/pos.db`. `connection_limit=1` wajib, alasannya di §6.3.
 
 Script:
 ```json
@@ -71,8 +71,10 @@ kasir-toko/
 ├─ backups/                 pos-YYYYMMDD-HHmmss.db  (30 terbaru)              (gitignored)
 ├─ docs/                    architecture.md  database.md  reporting.md  qris.md
 ├─ prisma/                  schema.prisma  migrations/  seed.ts
-├─ instrumentation.ts       ← hook startup (catch-up + backup + PRAGMA)
 └─ src/
+   ├─ instrumentation.ts  ← hook startup (backup + PRAGMA + catch-up).
+   │                         WAJIB di src/, bukan root: project ini memakai
+   │                         folder src/, dan Next.js hanya mencarinya di sana.
    ├─ app/
    │  ├─ (auth)/login/
    │  ├─ kasir/  shift/  pengeluaran/  transaksi/  produk/
@@ -189,7 +191,41 @@ export const prisma = g.prisma ?? new PrismaClient()
 if (process.env.NODE_ENV !== 'production') g.prisma = prisma
 ```
 
-### 6.3 Pengurangan stok WAJIB atomic di SQL
+### 6.3 `connection_limit=1` — wajib, bukan penyetelan performa
+
+```
+DATABASE_URL="file:../data/pos.db?connection_limit=1"
+```
+
+SQLite hanya mengizinkan **satu penulis pada satu waktu**. Pool koneksi default
+Prisma membuka beberapa koneksi, sehingga beberapa checkout bersamaan menjadi
+beberapa transaction yang saling berebut write lock. Yang terjadi bukan sekadar
+lambat — mereka saling memblokir sampai socket timeout, lalu **semuanya
+di-rollback**.
+
+Diukur pada DB kosong, 8 checkout bersamaan:
+
+| Konfigurasi | Waktu | Hasil |
+|---|---|---|
+| Pool default Prisma | 5.463 ms | **socket timeout, 8 transaksi GAGAL**, stok tidak berubah sama sekali |
+| `connection_limit=1` | **26 ms** | 8 transaksi sukses, stok berkurang tepat 8 |
+
+Dengan satu koneksi, checkout **mengantre** alih-alih berebut. Antrean itu murah:
+satu checkout selesai dalam hitungan milidetik, jadi tiga kasir yang menekan
+tombol bersamaan tidak akan pernah merasakannya.
+
+Ada konsekuensi kedua yang sama pentingnya: **PRAGMA berlaku per-koneksi.**
+Dengan pool lebih dari satu, `PRAGMA busy_timeout` yang dijalankan saat startup
+hanya mengenai satu koneksi dan tidak berlaku untuk sisanya. Satu koneksi
+membuat penerapan PRAGMA menjadi pasti, bukan kebetulan.
+
+Batasnya harus jujur disebut: satu koneksi berarti pembacaan juga ikut
+mengantre di belakang penulisan. Untuk satu toko dengan beberapa kasir dan
+ratusan transaksi per hari, ini tidak terasa. Kalau suatu saat beban naik jauh,
+jawabannya bukan menaikkan `connection_limit` — melainkan pindah ke database
+yang memang mendukung banyak penulis.
+
+### 6.4 Pengurangan stok WAJIB atomic di SQL
 
 ```sql
 UPDATE products SET stok = stok - ?, updatedAt = ? WHERE id = ? RETURNING stok;
@@ -207,12 +243,12 @@ Alasan ini **tetap berlaku walaupun stok minus diizinkan** — masalahnya bukan 
 
 `stockBefore` diturunkan dari `stockAfter + (-qtyChange)`, sehingga konsisten dengan nilai yang benar-benar ditulis, bukan dengan nilai yang dibaca sebelum update.
 
-### 6.4 Aturan transaction
+### 6.5 Aturan transaction
 - Write transaction **sependek mungkin**.
 - **Tidak ada panggilan jaringan di dalam DB transaction**, pernah. Kirim Discord/Telegram/Gemini selalu setelah commit.
 - Tidak ada `await` ke hal lain selain query DB di dalam `$transaction`.
 
-### 6.5 Nomor transaksi
+### 6.6 Nomor transaksi
 `TRX-20260918-000123` untuk manusia, UUID sebagai primary key.
 
 Sequence diambil dari tabel `daily_counters` yang di-increment **di dalam DB transaction yang sama** dengan pembuatan transaksi, ditambah `@unique` pada `trxNumber` sebagai jaring pengaman. Pola yang sama untuk refund: `RFN-20260918-000045`.
@@ -273,7 +309,7 @@ settleTransaction(tx, transactionId, actor)
 1. Transisi pembayaran `PENDING → PAID` **bergerbang**:
    `updateMany({ where: { id, status: 'PENDING' }, data: {...} })` → periksa `count === 1`.
    Kalau `0`, berarti device lain sudah memproses → tolak dengan error jelas. **Tidak ada double-apply.**
-2. Untuk setiap item: `UPDATE ... RETURNING` stok (§6.3) → insert `StockMovement` reason `SALE`.
+2. Untuk setiap item: `UPDATE ... RETURNING` stok (§6.4) → insert `StockMovement` reason `SALE`.
 3. `Transaction.status = COMPLETED`, `completedAt` diisi.
 4. Insert `AuditLog`.
 

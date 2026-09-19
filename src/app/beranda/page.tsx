@@ -86,7 +86,7 @@ export default async function BerandaPage() {
           ))}
         </ul>
         <p className="mt-3 text-xs text-kasir-muted">
-          Layar kasir menyusul di Fase 2.
+          Fase 2 sudah aktif: buka /kasir untuk bertransaksi.
         </p>
       </section>
     </main>

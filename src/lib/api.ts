@@ -1,6 +1,6 @@
 import 'server-only'
 import { NextResponse } from 'next/server'
-import { ZodError, type ZodType } from 'zod'
+import { ZodError, type TypeOf, type ZodTypeAny } from 'zod'
 import { AppError, ValidationError, describeError, isAppError } from './errors'
 import { createLogger } from './logger'
 
@@ -21,8 +21,18 @@ export interface ApiErrorBody {
   }
 }
 
-/** Validasi body JSON dengan Zod. Semua input client lewat sini. */
-export async function parseBody<T>(req: Request, schema: ZodType<T>): Promise<T> {
+/**
+ * Validasi body JSON dengan Zod. Semua input client lewat sini.
+ *
+ * Generiknya mengikat SCHEMA lalu menurunkan tipenya lewat `TypeOf`, bukan
+ * mengikat tipe hasil langsung. Bedanya nyata: dengan `ZodType<T>`, schema yang
+ * memakai `.default()` membuat TypeScript menyimpulkan tipe INPUT (field
+ * opsional) alih-alih tipe OUTPUT (field sudah terisi default).
+ */
+export async function parseBody<S extends ZodTypeAny>(
+  req: Request,
+  schema: S,
+): Promise<TypeOf<S>> {
   let raw: unknown
   try {
     raw = await req.json()
@@ -38,7 +48,7 @@ export async function parseBody<T>(req: Request, schema: ZodType<T>): Promise<T>
 }
 
 /** Validasi query string dengan Zod. */
-export function parseQuery<T>(req: Request, schema: ZodType<T>): T {
+export function parseQuery<S extends ZodTypeAny>(req: Request, schema: S): TypeOf<S> {
   const params = Object.fromEntries(new URL(req.url).searchParams.entries())
   const result = schema.safeParse(params)
   if (!result.success) {

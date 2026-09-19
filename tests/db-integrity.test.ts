@@ -43,7 +43,9 @@ beforeAll(() => {
     },
   )
 
-  prisma = new PrismaClient({ datasources: { db: { url: `file:${dbPath}` } } })
+  prisma = new PrismaClient({
+    datasources: { db: { url: `file:${dbPath}?connection_limit=1` } },
+  })
 }, 120_000)
 
 afterAll(async () => {
