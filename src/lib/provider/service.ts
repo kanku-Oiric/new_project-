@@ -263,28 +263,58 @@ export async function adjustProviderBalance(
   }
   requireKey(input.idempotencyKey, 'mencatat penyesuaian saldo')
 
-  const provider = await prisma.serviceProvider.findUnique({ where: { id: providerId } })
-  if (!provider) throw new NotFoundError('Provider tidak ditemukan')
-
-  const selisih = input.newBalance - provider.saldo
-  if (selisih === 0) {
-    throw new ValidationError('Saldo tercatat sudah sama dengan saldo yang dimasukkan')
-  }
-
   // Sidik jarinya memakai `newBalance` — ANGKA YANG DIKETIK PEMILIK — bukan
   // selisih hasil hitungan. Selisih berubah setiap kali ada transaksi jasa, jadi
   // sidik jari dari selisih akan menolak pengulangan yang sah sebagai "isi
   // berbeda". Pelajaran yang sama seperti mode `newQty` pada penyesuaian stok.
+  //
+  // Dihitung SEBELUM menyentuh database: ia hanya butuh angka yang dikirim,
+  // dan menaruhnya di sini yang memungkinkan jalur cepat di bawah berjalan
+  // lebih dulu daripada pemeriksaan bisnis apa pun.
   const print = movementFingerprint(providerId, 'ADJUSTMENT', 0, {
     newBalance: input.newBalance,
     note: input.note?.trim() || null,
   })
 
+  // JALUR CEPAT — sebelum "saldo sudah sama" diperiksa.
+  //
+  // Urutan ini adalah bug yang diperbaiki, bukan gaya penulisan. Sebelumnya
+  // pemeriksaan `selisih === 0` berjalan lebih dulu, dan request PERTAMA-lah
+  // yang membuat pemeriksaan itu benar: begitu saldo disesuaikan menjadi X,
+  // pengulangan request yang sama menemukan saldo sudah X lalu dijawab
+  // 400 "saldo tercatat sudah sama".
+  //
+  // Bagi pemilik yang response pertamanya hilang di WiFi toko, itu berarti:
+  // menekan tombol lagi menghasilkan pesan yang menyiratkan penyesuaiannya
+  // TIDAK dilakukan, padahal sudah. Yang benar adalah mengembalikan hasil yang
+  // pertama — itulah gunanya kunci sekali-pakai.
   const sudahAda = await readMovementByKey(input.idempotencyKey, print, actor.userId)
   if (sudahAda) return sudahAda
 
+  const provider = await prisma.serviceProvider.findUnique({ where: { id: providerId } })
+  if (!provider) throw new NotFoundError('Provider tidak ditemukan')
+
   try {
     return await prisma.$transaction(async (tx) => {
+      // Saldo dibaca ULANG DI DALAM transaction, dan selisihnya dihitung di
+      // sini — bukan dari pembacaan di luar.
+      //
+      // Pembacaan di luar transaction adalah baca-lalu-tulis: kalau ada
+      // transaksi jasa yang commit di antara pembacaan dan penerapan, selisih
+      // yang diterapkan dihitung dari saldo yang sudah basi, dan saldo akhirnya
+      // BUKAN angka yang diketik pemilik. Pemilik tidak akan pernah tahu,
+      // karena yang ia lihat hanyalah "tersimpan".
+      const kini = await tx.serviceProvider.findUnique({
+        where: { id: providerId },
+        select: { saldo: true },
+      })
+      if (!kini) throw new NotFoundError('Provider tidak ditemukan')
+
+      const selisih = input.newBalance - kini.saldo
+      if (selisih === 0) {
+        throw new ValidationError('Saldo tercatat sudah sama dengan saldo yang dimasukkan')
+      }
+
       const moved = await applyProviderMovement(tx, {
         providerId,
         amountChange: selisih,
@@ -299,13 +329,13 @@ export async function adjustProviderBalance(
 
       await recordAudit(tx, actor, {
         action: 'PROVIDER_ADJUSTMENT',
-        summary: `Saldo ${provider.nama}: ${moved.balanceBefore} → ${moved.balanceAfter} (${selisih > 0 ? '+' : ''}${selisih})`,
+        summary: `Saldo ${provider.nama}: ${moved.balanceBefore} → ${moved.balanceAfter} (${moved.amountChange > 0 ? '+' : ''}${moved.amountChange})`,
         entityType: 'ServiceProvider',
         entityId: providerId,
         before: { saldo: moved.balanceBefore },
         after: {
           saldo: moved.balanceAfter,
-          selisih,
+          selisih: moved.amountChange,
           note: input.note ?? null,
           authorizedByUserId: actor.authorizedByUserId,
         },
@@ -316,7 +346,7 @@ export async function adjustProviderBalance(
         providerName: provider.nama,
         balanceBefore: moved.balanceBefore,
         balanceAfter: moved.balanceAfter,
-        amountChange: selisih,
+        amountChange: moved.amountChange,
         replayed: false,
       }
     })

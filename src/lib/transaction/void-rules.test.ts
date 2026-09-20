@@ -25,8 +25,24 @@ describe('checkVoidEligibility', () => {
     // angka asli di aplikasi Shopee.
     const hasil = checkVoidEligibility(input({ hasService: true }))
     expect(hasil.canVoid).toBe(false)
-    expect(hasil.reason).toMatch(/jasa pembayaran/)
-    expect(hasil.reason).toMatch(/refund/)
+    expect(hasil.reason).toMatch(/jasa/i)
+  })
+
+  it('pesan penolakannya menyebut jalur yang BENAR-BENAR ada di sistem', () => {
+    // Test ini dulu berbunyi `expect(hasil.reason).toMatch(/refund/)`, dan ia
+    // LULUS — pesannya memang menyuruh "gunakan refund". Bug hunting
+    // membuktikan itu jalan buntu: refund dihitung dari baris BARANG
+    // (`transaction_items`), dan transaksi jasa murni tidak punya satu pun,
+    // jadi layar refund terbuka tanpa apa pun untuk dipilih.
+    //
+    // Assertion-nya dibalik, bukan dihapus: pesan penolakan adalah instruksi
+    // kepada manusia yang sedang berdiri di depan pelanggan, dan menyuruhnya
+    // menempuh jalur yang tidak ada lebih buruk daripada tidak menyuruh apa-apa.
+    const reason = checkVoidEligibility(input({ hasService: true })).reason ?? ''
+
+    expect(reason).not.toMatch(/refund/i)
+    expect(reason).toMatch(/pengeluaran kas/i)
+    expect(reason).toMatch(/saldo/i)
   })
 
   it('mengizinkan void hari ini saat shift masih terbuka', () => {

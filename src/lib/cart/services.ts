@@ -8,7 +8,7 @@ import {
   type PricedLine,
 } from './index'
 import type { ServiceDirection, ServiceKind } from '../enums'
-import { assertRupiah } from '../money'
+import { assertRupiah, assertRupiahSigned } from '../money'
 
 /**
  * Keranjang yang berisi barang DAN jasa pembayaran — modul murni, tanpa DB.
@@ -173,6 +173,18 @@ export function computeCartWithServices(
   const itemDiscountTotal = goods?.itemDiscountTotal ?? 0
   const netTotal = grossSubtotal - itemDiscountTotal - transactionDiscount
   const amountDue = netTotal + passthroughTotal
+
+  // Batas kolom diperiksa pada HASIL PENJUMLAHAN, bukan cuma pada tiap field.
+  //
+  // Setiap baris jasa boleh mencapai batas kolom sendiri-sendiri, jadi dua baris
+  // yang masing-masing sah bisa menghasilkan total yang tidak muat di kolom
+  // tempat `Payment.amount` disimpan. Tanpa pemeriksaan di sini, yang menolak
+  // belakangan adalah Prisma — dan penolakannya keluar sebagai 500, setelah
+  // nomor transaksi terbakar dari DailyCounter.
+  assertRupiahSigned(grossSubtotal, 'subtotal')
+  assertRupiahSigned(netTotal, 'total penjualan')
+  assertRupiahSigned(passthroughTotal, 'total titipan')
+  assertRupiahSigned(amountDue, 'total yang dibayar')
 
   return {
     goods,

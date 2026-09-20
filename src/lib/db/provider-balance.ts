@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client'
 import type { ExpenseSource, ProviderMovementReason } from '../enums'
-import { ConflictError } from '../errors'
+import { ConflictError, ValidationError } from '../errors'
+import { MAX_RUPIAH_COLUMN } from '../money'
 
 /**
  * Pergerakan saldo provider.
@@ -64,14 +65,48 @@ export async function applyProviderMovement(
     throw new Error(`amountChange harus bilangan bulat bukan nol, dapat ${input.amountChange}`)
   }
 
+  // Batas kolom dijaga DI DALAM SQL, bukan sesudah UPDATE berjalan.
+  //
+  // Alasannya ditemukan dengan menjalankannya: SQLite menyimpan integer 64-bit
+  // dan menerima `saldo + 2.1 miliar` tanpa mengeluh, tapi `RETURNING saldo`
+  // kemudian harus dikembalikan Prisma sebagai kolom `Int` — dan konversi
+  // itulah yang meledak. Artinya pemeriksaan apa pun SETELAH query ini tidak
+  // pernah sempat berjalan, dan pemanggilnya menerima kegagalan Prisma yang
+  // keluar sebagai 500.
+  //
+  // Lebih buruk lagi di luar transaction: UPDATE-nya sudah commit, jadi
+  // barisnya tersimpan dengan nilai yang TIDAK BISA DIBACA Prisma lagi —
+  // `findUnique` pada provider itu ikut gagal selamanya. Di dalam
+  // `$transaction` ia memang ter-rollback, tapi menggantungkan keutuhan data
+  // pada "kebetulan pemanggilnya membungkus transaction" bukan penjagaan.
+  //
+  // Dengan syarat di WHERE, baris yang akan melampaui batas TIDAK PERNAH
+  // ditulis, dan yang kembali adalah nol baris.
   const rows = await tx.$queryRaw<{ saldo: number | bigint }[]>`
     UPDATE service_providers SET saldo = saldo + ${input.amountChange}
     WHERE id = ${input.providerId}
+      AND saldo + ${input.amountChange} BETWEEN ${-MAX_RUPIAH_COLUMN} AND ${MAX_RUPIAH_COLUMN}
     RETURNING saldo
   `
 
   const row = rows[0]
   if (!row) {
+    // Nol baris berarti salah satu dari dua hal, dan keduanya butuh jawaban
+    // yang berbeda bagi manusia yang menekan tombolnya.
+    const ada = await tx.serviceProvider.findUnique({
+      where: { id: input.providerId },
+      select: { id: true },
+    })
+
+    if (ada) {
+      // Bukan kekhawatiran teoretis: pemilik yang mengetik 2000000000 alih-alih
+      // 2000000 menemui persis jalur ini, dan yang ia butuhkan adalah kalimat
+      // yang menyebut sebabnya — bukan "terjadi kesalahan di server".
+      throw new ValidationError(
+        `Saldo provider akan melewati batas kolom (±${MAX_RUPIAH_COLUMN}) setelah pergerakan ${input.amountChange}. Periksa jumlah nolnya.`,
+      )
+    }
+
     // Provider hilang di tengah transaksi (dinonaktifkan/dihapus bersamaan).
     // Melempar di sini me-rollback seluruh checkout, yang memang benar: lebih
     // baik penjualannya gagal daripada titipan tercatat tanpa saldo bergerak.

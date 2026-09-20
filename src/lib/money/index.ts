@@ -35,6 +35,28 @@ export class MoneyError extends AppError {
  * tidak melewati ceiling kolom. Dipanggil di batas penulisan, bukan di setiap
  * operasi aritmatika.
  */
+/**
+ * Seperti `assertRupiah`, tapi untuk nilai yang BOLEH negatif: saldo provider
+ * yang minus, titipan bertanda, dan selisih kas.
+ *
+ * Yang dijaga tetap sama — batas kolom `Int` 32-bit — hanya arahnya dua-duanya.
+ * Dipisah dari `assertRupiah` dengan sengaja: melonggarkan fungsi yang sudah
+ * dipakai puluhan tempat supaya menerima negatif akan mematikan penjagaan di
+ * semua tempat itu sekaligus, demi dua pemanggil yang memang butuh.
+ */
+export function assertRupiahSigned(value: number, label = 'nominal'): number {
+  if (!Number.isInteger(value)) {
+    throw new MoneyError(`${label} harus integer rupiah penuh, dapat ${value}`)
+  }
+  if (value > MAX_RUPIAH_COLUMN || value < -MAX_RUPIAH_COLUMN) {
+    throw new MoneyError(
+      `${label} melewati batas kolom (±${MAX_RUPIAH_COLUMN}), dapat ${value}. ` +
+        'Periksa jumlah nolnya.',
+    )
+  }
+  return value
+}
+
 export function assertRupiah(value: number, label = 'nominal'): number {
   if (!Number.isInteger(value)) {
     throw new MoneyError(`${label} harus integer rupiah penuh, dapat ${value}`)

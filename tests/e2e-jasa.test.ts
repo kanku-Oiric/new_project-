@@ -49,6 +49,21 @@ function kunci(): string {
   return `66666666-6666-4666-8666-${String(urutanKunci).padStart(12, '0')}`
 }
 
+/**
+ * Hari usaha menurut WIB, sama seperti yang dipakai server (`toBusinessDate`).
+ *
+ * BUKAN tanggal UTC. Antara pukul 00:00 dan 07:00 WIB, tanggal UTC menunjuk
+ * HARI KEMARIN - sehingga test yang memakainya menanyakan laporan tanggal yang
+ * transaksinya tidak ada di sana, lalu gagal dengan "expected 0 to be 16500".
+ *
+ * Test yang merah hanya di jam-jam tertentu lebih buruk daripada tidak ada
+ * test: ia mengajari orang mengabaikan warna merah.
+ */
+function hariUsaha(): string {
+  // en-CA menghasilkan YYYY-MM-DD, format yang sama dengan kolom businessDate.
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' })
+}
+
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer()
@@ -454,7 +469,13 @@ describe('menjual jasa: tiga angka yang tidak boleh tertukar', () => {
     })
 
     expect(res.status).toBe(409)
-    expect(JSON.stringify(res.data)).toMatch(/jasa pembayaran/i)
+    // Pesannya harus menyebut jalur yang benar-benar tersedia. Sebelum bug
+    // hunting ia menyuruh "gunakan refund", padahal refund atas transaksi jasa
+    // murni mustahil — tidak ada baris barang untuk dipilih (BH-04).
+    const pesan = JSON.stringify(res.data)
+    expect(pesan).toMatch(/jasa/i)
+    expect(pesan).not.toMatch(/refund/i)
+    expect(pesan).toMatch(/pengeluaran kas/i)
 
     const sesudah = await prisma.transaction.findUniqueOrThrow({ where: { id: trx.id } })
     expect(sesudah.status).toBe('COMPLETED')
@@ -599,7 +620,7 @@ describe('rekonsiliasi kas: top-up bukan pengeluaran', () => {
 describe('laporan: titipan tidak mencemari omzet', () => {
   it('18. laporan harian memisahkan omzet, titipan, dan uang yang berpindah', async () => {
     await loginAs(ownerId, OWNER_PIN)
-    const hari = new Date().toISOString().slice(0, 10)
+    const hari = hariUsaha()
 
     const res = await api('GET', `/api/reports/daily?date=${hari}`)
     expect(res.status).toBe(200)
@@ -632,7 +653,7 @@ describe('laporan: titipan tidak mencemari omzet', () => {
     // customerRef tersimpan di baris transaksi (pemilik butuh saat ada komplain),
     // tapi ia tidak punya jalur ke agregat — dan karena itu tidak punya jalur ke
     // payload AI maupun ke pesan laporan yang keluar dari jaringan toko.
-    const hari = new Date().toISOString().slice(0, 10)
+    const hari = hariUsaha()
     const res = await api('GET', `/api/reports/daily?date=${hari}`)
 
     expect(JSON.stringify(res.data.aggregate)).not.toContain('14045678901')

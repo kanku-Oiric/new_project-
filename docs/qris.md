@@ -293,6 +293,31 @@ Invarian ini dijaga dua lapis test: perilakunya di `tests/void-transition.test.t
 pembayaran wajib menyebut `canTransition`, dan `payment.updateMany` tanpa filter
 status ditolak.
 
+### 4.1b Hasil bug hunting terhadap state machine
+
+Diserang di `tests/attack.test.ts` dan `tests/e2e-qris.test.ts`:
+
+| Serangan | Hasil |
+|---|---|
+| Dua void SERENTAK atas satu transaksi | Tepat satu berhasil; stok kembali tepat sekali (G3) |
+| Konfirmasi ulang atas pembayaran `PAID` | `409`, stok tidak berkurang dua kali (e2e nomor 9) |
+| Pembatalan atas pembayaran `PAID` | `409` (e2e nomor 10) |
+| Dua checkout QRIS serentak, kunci sama | Tepat satu transaksi (e2e nomor 11) |
+| Konfirmasi tanpa session | `401` (e2e nomor 13) |
+| Void transaksi jasa | `409` — dan pesannya kini menyebut langkah yang benar-benar tersedia (lihat di bawah) |
+
+**Temuan yang diperbaiki:** pesan penolakan void atas transaksi jasa dulu
+berbunyi *"gunakan refund"*. Itu jalan buntu — refund dihitung dari baris
+BARANG (`transaction_items`), sementara transaksi jasa murni tidak punya satu
+pun, jadi layar refund terbuka tanpa apa pun untuk dipilih. Pesannya sekarang
+menyebut jalur yang ada: catat pengembalian sebagai pengeluaran kas, lalu
+cocokkan saldo provider lewat Saldo → Sesuaikan.
+
+Keterbatasan yang tetap ada: **tidak ada mekanisme refund untuk baris jasa.**
+Ini batas yang diakui, bukan bug yang tersembunyi — menambahkannya berarti
+memutuskan lebih dulu apa artinya "mengembalikan" titipan yang sudah dibayarkan
+ke provider, dan itu keputusan pemilik toko.
+
 ### 4.2 Transaksi terlantar
 
 Transaksi QRIS yang ditinggalkan akan menggantung `PENDING`. **Saat shift ditutup, semua transaksi `PENDING` milik shift itu otomatis `CANCELLED`, dan penutupan shift tidak pernah diblokir karenanya** (`architecture.md` §9.1).

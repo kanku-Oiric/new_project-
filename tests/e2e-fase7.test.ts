@@ -35,6 +35,21 @@ let cashierId = ''
 let productId = ''
 let cookie = ''
 
+/**
+ * Hari usaha menurut WIB, sama seperti yang dipakai server (`toBusinessDate`).
+ *
+ * BUKAN tanggal UTC. Antara pukul 00:00 dan 07:00 WIB, tanggal UTC menunjuk
+ * HARI KEMARIN - sehingga test yang memakainya menanyakan laporan tanggal yang
+ * transaksinya tidak ada di sana, lalu gagal dengan "expected 0 to be 16500".
+ *
+ * Test yang merah hanya di jam-jam tertentu lebih buruk daripada tidak ada
+ * test: ia mengajari orang mengabaikan warna merah.
+ */
+function hariUsaha(): string {
+  // en-CA menghasilkan YYYY-MM-DD, format yang sama dengan kolom businessDate.
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' })
+}
+
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer()
@@ -261,7 +276,7 @@ describe('kewajiban manual di dashboard pemilik', () => {
     await prisma.transaction.create({
       data: {
         trxNumber: trxDibatalkan,
-        businessDate: new Date().toISOString().slice(0, 10),
+        businessDate: hariUsaha(),
         shiftId,
         cashierId,
         status: 'PENDING',

@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client'
 import type { StockReason, StockRefType } from '../enums'
-import { ConflictError } from '../errors'
+import { ConflictError, ValidationError } from '../errors'
+import { MAX_RUPIAH_COLUMN } from '../money'
 
 /**
  * Pergerakan stok.
@@ -66,14 +67,33 @@ export async function applyStockMovement(
     throw new Error(`qtyChange harus bilangan bulat bukan nol, dapat ${input.qtyChange}`)
   }
 
+  // Syarat batas kolom ikut di WHERE, alasannya sama persis seperti saldo
+  // provider (src/lib/db/provider-balance.ts): SQLite menerima integer 64-bit,
+  // tapi `RETURNING stok` harus dikembalikan Prisma sebagai kolom `Int`, dan
+  // konversi itulah yang meledak — sesudah barisnya terlanjur ditulis.
+  //
+  // `MAX_RUPIAH_COLUMN` dipakai karena angkanya memang batas `Int` 32-bit yang
+  // sama; kolomnya berbeda, ceiling-nya satu.
   const rows = await tx.$queryRaw<{ stok: number | bigint }[]>`
     UPDATE products SET stok = stok + ${input.qtyChange}
     WHERE id = ${input.productId}
+      AND stok + ${input.qtyChange} BETWEEN ${-MAX_RUPIAH_COLUMN} AND ${MAX_RUPIAH_COLUMN}
     RETURNING stok
   `
 
   const row = rows[0]
   if (!row) {
+    const ada = await tx.product.findUnique({
+      where: { id: input.productId },
+      select: { id: true },
+    })
+
+    if (ada) {
+      throw new ValidationError(
+        `Stok produk akan melewati batas kolom (±${MAX_RUPIAH_COLUMN}) setelah perubahan ${input.qtyChange}. Periksa jumlah nolnya.`,
+      )
+    }
+
     // Produk hilang di tengah transaksi (dihapus/di-nonaktifkan bersamaan).
     // Melempar di sini akan me-rollback seluruh checkout, yang memang benar.
     throw new ConflictError('Produk tidak ditemukan saat memperbarui stok')

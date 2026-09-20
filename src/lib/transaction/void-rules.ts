@@ -60,10 +60,20 @@ export function checkVoidEligibility(input: VoidEligibilityInput): VoidEligibili
   // Yang benar adalah refund: uangnya memang harus keluar dari toko, dan
   // pemilik yang memutuskan berapa, karena titipannya sudah terlanjur dibayarkan.
   if (input.hasService) {
+    // Pesan ini dulu berbunyi "gunakan refund", dan itu JALAN BUNTU: refund
+    // dihitung dari baris BARANG (`transaction_items`), sementara transaksi
+    // jasa murni tidak punya satu pun. Kasir yang mengikutinya akan menemukan
+    // layar refund tanpa apa pun untuk dipilih — sambil pelanggan menunggu.
+    //
+    // Yang disebut sekarang adalah langkah yang benar-benar tersedia di
+    // sistem ini, dan urutannya sesuai kenyataan: uangnya memang sudah keluar
+    // ke provider, jadi yang bisa dilakukan hanya mencatat akibatnya.
     return {
       canVoid: false,
       reason:
-        'Transaksi memuat jasa pembayaran yang sudah dibayarkan ke provider — gunakan refund, dan sesuaikan saldo provider secara manual',
+        'Transaksi jasa tidak bisa dibatalkan — titipannya sudah dibayarkan ke provider. ' +
+        'Kalau uangnya dikembalikan ke pelanggan, catat sebagai pengeluaran kas, ' +
+        'lalu cocokkan saldo provider lewat Saldo → Sesuaikan.',
     }
   }
   if (input.businessDate !== input.today) {

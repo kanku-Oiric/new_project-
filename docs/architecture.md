@@ -990,6 +990,77 @@ sidik jari yang memakai hasil konversi akan berubah setiap kali stok bergerak �
 dan pengulangan yang sah dijawab `409 kunci dipakai untuk isi berbeda`. Diuji di
 `tests/idempotency.test.ts` nomor 35.
 
+### 19a.1b Invarian batas kolom
+
+> Setiap nilai yang ditulis ke kolom nominal `Int` harus dijaga SEBELUM baris
+> ditulis, termasuk nilai yang lahir dari penjumlahan di dalam SQL.
+
+Kolom nominal dan kolom stok memakai `Int` 32-bit (±2.147.483.647,
+`MAX_RUPIAH_COLUMN`). Yang mudah terlewat: SQLite menyimpan integer **64-bit**,
+jadi `UPDATE ... SET saldo = saldo + ?` menerima nilai di luar batas itu tanpa
+mengeluh. Yang meledak belakangan adalah `RETURNING saldo`, karena Prisma harus
+mengembalikannya sebagai kolom `Int`.
+
+Akibatnya, sebelum diperbaiki:
+
+| | Yang terjadi |
+|---|---|
+| Di dalam `$transaction` | Kegagalan Prisma keluar sebagai **500**, bukan 400 — pemilik yang salah ketik jumlah nol membaca "terjadi kesalahan di server" |
+| Di luar `$transaction` | UPDATE-nya **sudah commit**. Barisnya tersimpan dengan nilai yang tidak bisa dibaca Prisma lagi, dan `findUnique` pada baris itu gagal selamanya |
+
+Penjagaannya karena itu ada **di dalam SQL**, bukan sesudahnya:
+
+```sql
+UPDATE service_providers SET saldo = saldo + ?
+WHERE id = ?
+  AND saldo + ? BETWEEN -2147483647 AND 2147483647
+RETURNING saldo
+```
+
+Nol baris yang kembali berarti salah satu dari dua hal, dan keduanya dibedakan:
+baris yang memang tidak ada (`ConflictError`), atau perubahan yang akan
+melampaui batas (`ValidationError` 400 dengan kalimat "periksa jumlah nolnya").
+
+Berlaku sama untuk `products.stok` (`applyStockMovement`) dan untuk total
+keranjang (`computeCartWithServices` memeriksa `grossSubtotal`, `netTotal`,
+`passthroughTotal`, dan `amountDue` — dua baris jasa yang masing-masing sah bisa
+menghasilkan total yang tidak muat).
+
+Diuji di `tests/attack.test.ts` B1, B1b, B3.
+
+### 19a.1c Urutan: kunci sekali-pakai diperiksa sebelum aturan bisnis
+
+> Jalur cepat idempotency harus berjalan SEBELUM pemeriksaan bisnis apa pun yang
+> bisa menjadi benar **karena request pertama berhasil**.
+
+`adjustProviderBalance` sempat melanggarnya: ia memeriksa "saldo tercatat sudah
+sama dengan saldo yang dimasukkan" lebih dulu. Request pertama menyesuaikan
+saldo menjadi X; pengulangan yang sah — response pertama hilang di WiFi toko —
+menemukan saldo sudah X, lalu dijawab **400 "saldo tercatat sudah sama"**.
+
+Bagi pemilik, kalimat itu menyiratkan penyesuaiannya **tidak** dilakukan,
+padahal sudah. Yang benar adalah mengembalikan hasil yang pertama; itulah
+gunanya kunci.
+
+Aturan turunannya: sidik jari harus bisa dihitung **tanpa menyentuh database**,
+karena kalau ia butuh pembacaan, pembacaan itu cenderung dipakai sekalian untuk
+pemeriksaan bisnis — dan urutannya kembali terbalik.
+
+Diuji di `tests/attack.test.ts` E3.
+
+### 19a.1d Nilai turunan dihitung di dalam transaction
+
+`adjustProviderBalance` juga membaca saldo di LUAR transaction lalu menerapkan
+selisih hasil hitungan itu di dalamnya. Baca-lalu-tulis melintasi batas
+transaction: kalau ada transaksi jasa yang commit di antaranya, selisih yang
+diterapkan dihitung dari saldo basi, dan saldo akhirnya **bukan** angka yang
+diketik pemilik — tanpa ada yang menyadarinya, karena yang ia lihat hanyalah
+"tersimpan".
+
+Saldo sekarang dibaca ulang di dalam transaction dan selisihnya dihitung di
+sana. Diuji di `tests/attack.test.ts` C1 (lima penyesuaian serentak ke angka
+yang sama harus berakhir pada angka itu).
+
 ### 19a.2 Invarian state machine pembayaran
 
 > Perubahan status pembayaran hanya boleh terjadi lewat `canTransition`, dan

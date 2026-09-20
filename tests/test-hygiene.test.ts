@@ -86,6 +86,36 @@ describe('kebersihan test', () => {
     expect(pelanggaran).toEqual([])
   })
 
+  it('tidak ada test yang memakai tanggal UTC sebagai hari usaha', () => {
+    // Ditemukan saat bug hunting, pukul 06:00 WIB: sebuah test meminta laporan
+    // harian untuk tanggal UTC, lalu gagal dengan "expected 0 to be 16500" —
+    // karena seluruh transaksinya tercatat pada hari usaha WIB yang sudah
+    // berganti tujuh jam lebih dulu.
+    //
+    // Test itu LULUS sepanjang jam kerja dan hanya merah antara 00:00 dan
+    // 07:00 WIB. Kegagalan yang cuma muncul di jam tertentu lebih buruk
+    // daripada tidak ada test: ia mengajari orang mengabaikan warna merah,
+    // dan orang berikutnya akan menjalankannya ulang lalu menganggapnya
+    // "kadang memang begitu".
+    //
+    // Penjaganya di sini karena tidak ada pemeriksaan lain yang bisa
+    // menangkapnya: typecheck, lint, dan build semuanya hijau.
+    const pelanggaran: string[] = []
+
+    for (const { file, text } of testFiles()) {
+      if (file === BERKAS_INI) continue
+
+      text.split('\n').forEach((line, i) => {
+        if (/^\s*(\/\/|\*)/.test(line)) return
+        if (/toISOString\(\)\s*\.slice\(0,\s*10\)/.test(line)) {
+          pelanggaran.push(`${file}:${i + 1}: ${line.trim()}`)
+        }
+      })
+    }
+
+    expect(pelanggaran).toEqual([])
+  })
+
   it('folder backups/ toko tidak memuat snapshot database uji', () => {
     // Pemeriksaan atas keadaan NYATA, bukan atas bentuk kode. Kalau seseorang
     // menjalankan test dengan cara yang melewati ketiga penjaga di atas,
