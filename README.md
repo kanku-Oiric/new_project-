@@ -162,6 +162,7 @@ Disebutkan di sini supaya tidak ada yang menunggu hal yang tidak akan datang:
 - **QRIS tidak otomatis.** Sistem menampilkan gambar QR toko; kasir melihat notifikasi masuk di HP-nya sendiri, lalu menekan "Pembayaran diterima". Tidak ada sambungan ke bank.
 - **Uang QRIS tidak bisa ditarik kembali.** Kalau transaksi QRIS yang sudah dibayar di-void, pengembalian ke pelanggan dilakukan manual. Dashboard mencatat kewajiban itu supaya tidak terlupa.
 - **Tidak ada laporan pajak, kasbon, atau data pelanggan.**
+- **Analisis AI default MATI.** Kalau dinyalakan, ia hanya memberi ulasan tertulis atas laporan mingguan dan bulanan — maksimal sekali sehari. Ia tidak pernah mengubah harga, stok, kas, atau transaksi, dan sistem berjalan normal tanpanya.
 - **Tidak ada printer thermal.** Struk dicetak lewat fitur cetak browser.
 
 ## A8. Kalau ada yang tidak jalan
@@ -248,7 +249,17 @@ Setiap backup diverifikasi dengan membuka berkasnya lewat `ATTACH DATABASE 'file
 
 Hanya backup yang lulus verifikasi yang disalin ke `BACKUP_MIRROR_DIR`. Hasilnya dicatat di audit log sebagai `BACKUP_RUN`, termasuk kalau gagal.
 
-## B6. Export CSV
+## B6. Gemini (opsional, default mati)
+
+Empat gerbang di `src/lib/ai/service.ts`, semuanya **di depan** panggilan HTTP: `AI_ENABLED`, ada kunci API, `kind` ∈ {WEEKLY, MONTHLY}, dan kurang dari satu panggilan pada hari usaha ini. Panggilan yang gagal **tetap** menghabiskan kuota — kunci rusak tidak boleh ditembak sepanjang hari.
+
+`src/lib/ai/payload.ts` tidak mengimpor apa pun selain `../report`, dan itu ditegakkan test. Nama kasir, nomor transaksi, timestamp, nama toko, dan seluruh isi `settings` tidak punya jalur masuk ke payload. Kunci API dikirim lewat header, bukan query string.
+
+Keluaran divalidasi Zod sebelum apa pun dilakukan terhadapnya. Yang tidak lolos tidak tersimpan, tidak masuk laporan, dan tidak menggagalkan pengiriman.
+
+Untuk mengujinya tanpa menyentuh internet: `fetchImpl` disuntik di `requestInsight`, dan `insightFor` disuntik di `deliverReport`. Test `tests/ai-disabled.test.ts` bahkan mengganti `fetch` global dengan fungsi yang menggagalkan test kalau dipanggil.
+
+## B7. Export CSV
 
 `GET /api/export/csv` menghasilkan satu ZIP berisi CSV per tabel. Penulis ZIP-nya ada di `src/lib/backup/zip.ts` — metode store, tanpa dependensi baru.
 

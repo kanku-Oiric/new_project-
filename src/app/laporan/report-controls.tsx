@@ -29,6 +29,20 @@ interface SendResult {
   results: { channel: string; status: string; error: string | null }[]
 }
 
+interface InsightResponse {
+  status: string
+  message: string
+  text: string | null
+  model: string | null
+  createdAt: string | null
+}
+
+export interface CachedInsightRow {
+  text: string
+  model: string
+  createdAt: string
+}
+
 const KIND_OPTIONS: { value: ReportKind; label: string }[] = [
   { value: 'DAILY', label: 'Harian' },
   { value: 'WEEKLY', label: 'Mingguan' },
@@ -49,6 +63,8 @@ export function ReportControls({
   periodComplete,
   channels,
   deliveries,
+  aiEnabled,
+  aiCached,
 }: {
   kind: ReportKind
   periodKey: string
@@ -56,11 +72,15 @@ export function ReportControls({
   periodComplete: boolean
   channels: ChannelInfo[]
   deliveries: DeliveryRow[]
+  aiEnabled: boolean
+  aiCached: CachedInsightRow | null
 }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [aiBusy, setAiBusy] = useState(false)
+  const [ai, setAi] = useState<InsightResponse | null>(null)
 
   const siap = channels.filter((c) => c.configured)
 
@@ -177,6 +197,123 @@ export function ReportControls({
           ))}
         </ul>
       </section>
+
+      {kind !== 'DAILY' && (
+        <section className="mt-4 rounded-xl border border-kasir-border bg-kasir-surface p-4">
+          <h2 className="text-base font-semibold text-kasir-text">Analisis AI</h2>
+
+          {!aiEnabled ? (
+            <p className="mt-2 text-sm text-kasir-muted">
+              Dimatikan. Isi <code>AI_ENABLED=true</code> dan <code>GEMINI_API_KEY</code> di berkas
+              .env kalau mau memakainya. Selama mati, seluruh laporan tetap dihitung dan dikirim
+              seperti biasa — tidak ada bagian yang bergantung padanya.
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-xs text-kasir-muted">
+                Maksimal satu panggilan per hari, hanya untuk laporan mingguan dan bulanan. Yang
+                dikirim ke Google hanya angka agregat penjualan periode ini — tanpa nama kasir,
+                tanpa nomor transaksi, tanpa isi pengaturan.
+              </p>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={aiBusy}
+                  onClick={async () => {
+                    setAiBusy(true)
+                    setAi(null)
+                    const outcome = await postJson<InsightResponse>('/api/ai/insight', {
+                      kind,
+                      periodKey,
+                    })
+                    setAiBusy(false)
+                    if (outcome.kind !== 'ok') {
+                      setAi({
+                        status: 'FAILED',
+                        message: outcomeMessage(outcome, false),
+                        text: null,
+                        model: null,
+                        createdAt: null,
+                      })
+                      return
+                    }
+                    setAi(outcome.data)
+                  }}
+                  className="h-11 rounded-xl border border-kasir-border px-4 text-sm text-kasir-text disabled:opacity-40"
+                >
+                  {aiBusy ? 'Meminta analisis…' : aiCached ? 'Tampilkan analisis' : 'Minta analisis'}
+                </button>
+
+                {aiCached && (
+                  <button
+                    type="button"
+                    disabled={aiBusy}
+                    onClick={async () => {
+                      setAiBusy(true)
+                      setAi(null)
+                      const outcome = await postJson<InsightResponse>('/api/ai/insight', {
+                        kind,
+                        periodKey,
+                        refresh: true,
+                      })
+                      setAiBusy(false)
+                      if (outcome.kind !== 'ok') {
+                        setAi({
+                          status: 'FAILED',
+                          message: outcomeMessage(outcome, false),
+                          text: null,
+                          model: null,
+                          createdAt: null,
+                        })
+                        return
+                      }
+                      setAi(outcome.data)
+                      router.refresh()
+                    }}
+                    className="h-11 rounded-xl border border-kasir-border px-4 text-sm text-kasir-muted disabled:opacity-40"
+                  >
+                    Analisis ulang (pakai kuota)
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Hasil tersimpan ditampilkan walau tombol belum ditekan: ia sudah
+              dibayar, dan menyembunyikannya di balik satu klik tidak ada gunanya. */}
+          {ai === null && aiCached && (
+            <div className="mt-3">
+              <p className="text-xs text-kasir-muted">
+                Tersimpan {new Date(aiCached.createdAt).toLocaleString('id-ID')} · {aiCached.model}
+              </p>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-kasir-text">{aiCached.text}</p>
+            </div>
+          )}
+
+          {ai && (
+            <div className="mt-3">
+              <p
+                className={`text-sm ${
+                  ai.status === 'FRESH' || ai.status === 'CACHED'
+                    ? 'text-kasir-muted'
+                    : 'text-kasir-warning'
+                }`}
+              >
+                {ai.message}
+              </p>
+              {ai.text && (
+                <p className="mt-2 whitespace-pre-wrap text-sm text-kasir-text">{ai.text}</p>
+              )}
+            </div>
+          )}
+
+          <p className="mt-3 text-xs text-kasir-muted">
+            Teks analisis tidak pernah mengubah harga, stok, kas, atau transaksi. Ia tersimpan di
+            tabelnya sendiri dan hanya dibaca manusia.
+          </p>
+        </section>
+      )}
 
       {deliveries.length > 0 && (
         <section className="mt-4 rounded-xl border border-kasir-border bg-kasir-surface p-4">

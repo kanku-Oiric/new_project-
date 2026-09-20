@@ -11,6 +11,10 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // Lihat tests/stubs/server-only.ts: paket aslinya melempar saat dimuat di
+      // luar bundler Next.js, sehingga modul server tidak bisa diuji sama sekali.
+      // Penjaganya tetap berlaku saat `next build`.
+      'server-only': fileURLToPath(new URL('./tests/stubs/server-only.ts', import.meta.url)),
     },
   },
 })

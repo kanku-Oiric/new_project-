@@ -1,4 +1,7 @@
 import type { Db } from '../audit'
+import { readCachedInsightText } from '../ai/cache'
+import { insightTextForDelivery, type InsightInput } from '../ai/service'
+import type { AiReportKind } from '../ai/payload'
 import { config } from '../config'
 import { isUniqueViolation } from '../db/errors'
 import { prisma } from '../db/prisma'
@@ -33,6 +36,7 @@ import { toBusinessDate } from '../time'
 import {
   aggregateSales,
   compareAggregates,
+  type AggregateComparison,
   type ReportInput,
   type SalesAggregate,
 } from './index'
@@ -169,6 +173,8 @@ export interface BuiltReport {
   range: PeriodRange
   label: string
   aggregate: SalesAggregate
+  /** null untuk DAILY. Dibawa keluar supaya payload AI tidak menghitungnya ulang. */
+  comparison: AggregateComparison | null
   message: ReportMessage
 }
 
@@ -183,6 +189,15 @@ export async function buildReport(
   kind: ReportKind,
   periodKey: string,
   db: Db = prisma,
+  /**
+   * Teks analisis yang sudah dipegang pemanggil. Kalau tidak diberikan, yang
+   * dipakai adalah hasil TERSIMPAN dari `ai_insights` — pembacaan database biasa,
+   * tanpa satu pun request ke internet.
+   *
+   * Itulah sebabnya membuka /laporan tiga kali tidak menghabiskan kuota harian,
+   * dan sebabnya angka di layar selalu identik dengan yang dikirim ke Discord.
+   */
+  aiInsight: string | null = null,
 ): Promise<BuiltReport> {
   assertPeriodKey(kind, periodKey)
 
@@ -193,7 +208,7 @@ export async function buildReport(
   ])
   const aggregate = aggregateSales(input)
 
-  let comparison = null
+  let comparison: AggregateComparison | null = null
   if (kind !== 'DAILY') {
     const previousKey = previousPeriodKey(kind, periodKey)
     const previousInput = await collectReportInput(periodRange(kind, previousKey), db)
@@ -202,12 +217,18 @@ export async function buildReport(
 
   const label = periodLabel(kind, periodKey)
 
+  // Laporan harian tidak pernah punya analisis, jadi tidak perlu query apa pun.
+  const insight =
+    aiInsight ??
+    (kind === 'DAILY' ? null : await readCachedInsightText(kind as AiReportKind, periodKey, db))
+
   return {
     kind,
     periodKey,
     range,
     label,
     aggregate,
+    comparison,
     message: buildReportMessage(aggregate, {
       kind,
       periodKey,
@@ -215,6 +236,7 @@ export async function buildReport(
       storeName,
       timezone: config.timezone,
       comparison,
+      aiInsight: insight,
     }),
   }
 }
@@ -223,6 +245,12 @@ export async function buildReport(
 
 export interface DeliverOptions {
   db?: Db
+  /**
+   * Penyedia teks analisis. Disuntik test supaya jalur pengiriman bisa diuji
+   * dengan AI yang berhasil, gagal, dan menjawab ngawur — tanpa satu pun request
+   * ke internet. Default: `insightTextForDelivery`, yang menghormati batas harian.
+   */
+  insightFor?: (input: InsightInput, db: Db, now: Date) => Promise<string | null>
   now?: Date
   requestedByUserId?: string | null
   sendOptions?: SendWithRetryOptions
@@ -349,9 +377,9 @@ async function runDelivery(
 ): Promise<DeliveryResult> {
   const db = options.db ?? prisma
 
-  let message: ReportMessage
+  let built: BuiltReport
   try {
-    message = (await buildReport(kind, periodKey, db)).message
+    built = await buildReport(kind, periodKey, db)
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)
     log.error(`gagal menyusun laporan ${kind} ${periodKey}`, e)
@@ -370,6 +398,38 @@ async function runDelivery(
       channel,
       attempts: previousAttempts + 1,
       error,
+    }
+  }
+
+  // ── Analisis AI, kalau memang aktif ───────────────────────────────────────
+  //
+  // Di luar blok try di atas dengan sengaja: kegagalan analisis TIDAK boleh
+  // menandai pengiriman gagal. Laporan yang benar terkirim tanpa analisis jauh
+  // lebih berguna daripada laporan yang tidak terkirim karena bagian pinggirnya
+  // bermasalah.
+  //
+  // `buildReport` sudah menempelkan hasil TERSIMPAN kalau ada; blok ini hanya
+  // berjalan kalau belum ada, jadi pengiriman ulang atas laporan yang sama tidak
+  // memanggil API untuk kedua kalinya.
+  let message: ReportMessage = built.message
+  if (!message.aiInsight && kind !== 'DAILY') {
+    try {
+      const generate = options.insightFor ?? insightTextForDelivery
+      const text = await generate(
+        {
+          kind: kind as AiReportKind,
+          periodKey,
+          aggregate: built.aggregate,
+          comparison: built.comparison,
+        },
+        db,
+        now,
+      )
+      if (text) message = { ...message, aiInsight: text }
+    } catch (e) {
+      log.warn(`analisis AI untuk ${kind} ${periodKey} dilewati`, {
+        error: e instanceof Error ? e.message : String(e),
+      })
     }
   }
 

@@ -1,6 +1,6 @@
 # Laporan — Definisi & Perhitungan
 
-> Status: **Terpasang di Fase 6.** Definisi di §1–§6 sudah berjalan sebagai kode; §7.3 mencatat apa yang belum dipakai. Pendamping `architecture.md` dan `database.md`.
+> Status: **Terpasang di Fase 6, bagian analisis AI menyusul di Fase 8.** Definisi di §1–§6 sudah berjalan sebagai kode; §7.3 mencatat apa yang belum dipakai. Pendamping `architecture.md` dan `database.md`.
 
 Dokumen ini adalah **satu-satunya definisi** angka laporan. Kalau kode dan dokumen ini berbeda, salah satunya bug — dan yang diperbaiki harus disepakati, bukan diam-diam dibiarkan berbeda.
 
@@ -230,6 +230,17 @@ Metrik yang sama, ditambah:
 - Perbandingan terhadap periode sebelumnya (nominal dan persentase). Kalau periode sebelumnya bernilai 0, persentase ditampilkan `—`, bukan `∞` atau `100%`.
 - Tren per hari (mingguan) / per minggu (bulanan).
 - Bagian analisis AI **kalau** `AI_ENABLED=true` dan panggilan berhasil serta lolos validasi Zod. Kalau tidak, bagian ini **tidak muncul** — tidak ada placeholder dan tidak ada pesan error di laporan yang dikirim ke pemilik.
+
+Dari mana teks analisis itu datang (lihat `architecture.md` §12):
+
+| Jalur | Apakah memanggil API |
+|---|---|
+| Membuka `/laporan` | **Tidak.** Hanya membaca `ai_insights`. Membuka halaman lima kali tidak menghabiskan kuota |
+| Menekan "Minta analisis" | Ya, kalau belum ada hasil tersimpan dan kuota hari ini belum terpakai |
+| Pengiriman laporan otomatis | Ya, sekali, dengan aturan yang sama. Kalau gagal, laporannya **tetap terkirim** tanpa bagian itu |
+| Pengiriman ULANG periode yang sama | **Tidak.** Hasil tersimpan sudah menempel saat pesan disusun |
+
+Kegagalan analisis tidak pernah menandai pengiriman gagal. Kodenya memang berada di luar blok yang menentukan status pengiriman — kegagalan di bagian pinggir tidak boleh menjatuhkan bagian yang penting.
 
 ---
 

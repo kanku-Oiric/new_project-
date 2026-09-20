@@ -36,12 +36,13 @@
     ".next-e2e/types/**/*.ts",
     ".next-f7/types/**/*.ts",
     ".next-idem/types/**/*.ts",
+    ".next-once/types/**/*.ts",
     ".next-qris/types/**/*.ts",
     ".next-reports/types/**/*.ts",
     ".next-test/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-once/types/**/*.ts"
+    ".next-ai/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

@@ -8,6 +8,7 @@ import { listNotificationProviders } from '@/lib/notify/registry'
 import { buildReport } from '@/lib/report/service'
 import { isPeriodComplete, isValidPeriodKey, periodKeyFor } from '@/lib/schedule'
 import { toBusinessDate } from '@/lib/time'
+import { readCachedInsight } from '@/lib/ai/cache'
 import { ReportControls, type DeliveryRow } from './report-controls'
 
 export const dynamic = 'force-dynamic'
@@ -37,7 +38,7 @@ export default async function LaporanPage({
   const periodKey =
     params.period && isValidPeriodKey(kind, params.period) ? params.period : fallbackKey
 
-  const [report, deliveries, providers] = await Promise.all([
+  const [report, deliveries, providers, cachedInsight] = await Promise.all([
     buildReport(kind, periodKey),
     prisma.reportDelivery.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
     Promise.all(
@@ -46,6 +47,9 @@ export default async function LaporanPage({
         ...(await p.describe()),
       })),
     ),
+    // Pembacaan cache, bukan panggilan API. Membuka halaman ini tidak pernah
+    // menghabiskan kuota harian (docs/architecture.md §12.1).
+    kind === 'DAILY' ? Promise.resolve(null) : readCachedInsight(kind, periodKey),
   ])
 
   const selesai = isPeriodComplete(kind, periodKey, today)
@@ -67,6 +71,16 @@ export default async function LaporanPage({
           periodComplete={selesai}
           channels={providers}
           deliveries={deliveries satisfies DeliveryRow[]}
+          aiEnabled={config.ai.enabled}
+          aiCached={
+            cachedInsight
+              ? {
+                  text: cachedInsight.text,
+                  model: cachedInsight.model,
+                  createdAt: cachedInsight.createdAt.toISOString(),
+                }
+              : null
+          }
         />
 
         <section className="mt-4 rounded-xl border border-kasir-border bg-kasir-surface p-4">

@@ -1,6 +1,6 @@
 # Arsitektur — Sistem Kasir Toko
 
-> Status: **Fase 1–7 terpasang.** Dokumen ini menggambarkan kode yang benar-benar ada, bukan rencana — kecuali Fase 8 (Gemini) yang belum dikerjakan dan ditandai apa adanya di §12 dan §17. Batas yang diakui terbuka ada di §19; daftarnya dirawat, bukan dibiarkan basi. Pendamping `database.md`, `reporting.md`, `qris.md`, dan `README.md`.
+> Status: **Fase 1–8 terpasang.** Dokumen ini menggambarkan kode yang benar-benar ada, bukan rencana. Batas yang diakui terbuka ada di §19; daftarnya dirawat, bukan dibiarkan basi. Pendamping `database.md`, `reporting.md`, `qris.md`, dan `README.md`.
 
 ---
 
@@ -534,6 +534,38 @@ GEMINI_MODEL=
 - Input dibangun oleh `buildAiPayload(aggregate)` yang secara **konstruksi** hanya menerima angka agregat penjualan. Objek settings, credential, dan data pelanggan tidak punya jalur masuk — bukan karena disaring, tapi karena tipe fungsinya tidak menerimanya. (v1 juga tidak menyimpan data pelanggan sama sekali.)
 - Output diminta sebagai **JSON terstruktur**, divalidasi Zod. Invalid → bagian AI **dilewati**, dicatat di `ai_call_logs` sebagai `ok=false`, laporan tetap terkirim. Tidak crash, dan **tidak ada baris `ai_insights` yang ditulis** — hanya hasil yang lolos validasi yang boleh tersimpan.
 
+### 12.0 Empat gerbang, semuanya di depan panggilan HTTP
+
+Ditegakkan berurutan di `src/lib/ai/service.ts`:
+
+| Gerbang | Kalau tidak lolos |
+|---|---|
+| `AI_ENABLED=true` | `DISABLED` — **tidak ada request yang dibuat**, bukan request yang hasilnya diabaikan |
+| `GEMINI_API_KEY` terisi | `NOT_CONFIGURED` — dikatakan apa adanya, bukan dicoba lalu gagal |
+| `kind` = WEEKLY atau MONTHLY | `UNSUPPORTED_KIND`. Skema route bahkan tidak memuat `DAILY`, jadi Zod menolaknya lebih dulu |
+| Kurang dari 1 panggilan hari ini | `LIMIT_REACHED` |
+
+Gerbang keempat menghitung **semua** baris `ai_call_logs` hari itu, termasuk yang gagal. Konsekuensinya disengaja: satu jawaban ngawur menghabiskan kuota hari itu. Yang dicegah adalah kunci rusak atau model yang terus menjawab salah ditembak berulang kali sepanjang hari — biayanya nyata, dan tagihannya ke pemilik toko.
+
+Cache dibaca **sebelum** gerbang kuota: menampilkan hasil yang sudah ada tidak menghabiskan apa pun, dan menolaknya karena kuota akan menyembunyikan analisis yang sudah dibayar kemarin.
+
+### 12.0.1 Yang tidak punya jalur masuk ke payload
+
+`buildAiPayload` menerima `SalesAggregate`, bukan baris transaksi mentah, dan `src/lib/ai/payload.ts` **tidak mengimpor apa pun selain `../report`** — ditegakkan test yang membaca daftar impor berkas itu.
+
+Yang sengaja **tidak** dikirim, dan diuji ketiadaannya:
+
+| Tidak dikirim | Alasan |
+|---|---|
+| Webhook Discord, token Telegram, seluruh isi `settings` | Rahasia, dan analisis tidak membutuhkannya |
+| **Nama toko** | Termasuk isi `settings`. Model tidak membutuhkannya, jadi ia tidak dikirim |
+| **Nama kasir** | Laporan ini menilai penjualan, bukan orang. Selisih kas tetap dikirim sebagai angka total, tanpa pemiliknya |
+| Nomor transaksi, id, timestamp | Tidak menambah apa pun bagi analisis agregat, hanya memperbesar jejak yang keluar |
+| PIN dan hash-nya | — |
+| Data pelanggan | v1 tidak menyimpannya sama sekali |
+
+Kunci API dikirim lewat header `x-goog-api-key`, **bukan** query string: kunci di URL ikut tercatat di log akses, pesan error, dan riwayat. Kunci juga dibuang dari setiap pesan error sebelum masuk `ai_call_logs`, berkas log, atau layar pemilik.
+
 ### 12.1 Penyimpanan teks AI
 
 Hasil analisis **disimpan** di tabel `ai_insights`, supaya pemilik bisa membacanya ulang tanpa memanggil API lagi — penting karena batasnya 1 panggilan per hari.
@@ -796,7 +828,7 @@ Setiap fase berakhir dalam kondisi **bisa dijalankan**, dan wajib lulus `npm run
 | **5** | `PaymentProvider` + `StaticQrisProvider` + registry. State machine bergerbang. Upload gambar QR. Finalisasi `qris.md`. | Double-confirm ditolak; tidak ada PAID tanpa aksi manusia |
 | **6** | Agregasi harian/mingguan/bulanan murni + `/laporan`. Catch-up di `instrumentation.ts` + scheduler interval. Discord + Telegram + WhatsApp stub + backoff + `report_deliveries` idempotent (`trigger` AUTO/MANUAL). Kirim manual & retry. | **Test "server mati 3 hari" + test idempotensi lulus; kirim manual 2× tidak error** |
 | **7** | Mirror backup opsional. **Verifikasi backup: `integrity_check` + hitung baris lewat `ATTACH ... mode=ro`.** Tombol "Backup sekarang" & export CSV (ZIP ditulis sendiri, tanpa dependensi baru). Dashboard owner: **kewajiban manual — void atas QRIS `PAID` DAN QRIS yang dibatalkan otomatis saat tutup shift**. README dua bagian: bagian A untuk orang non-teknis (nyalakan, cari IP LAN, izin Windows Firewall, `start-toko.bat`, **restore tujuh langkah termasuk menghapus `-wal`/`-shm`**), bagian B untuk pengembang. | Backup rusak dilaporkan rusak; ZIP export dibuka Windows sendiri di test; kedua jenis kewajiban manual muncul di dashboard lewat test HTTP. **Latihan restore dari awal sampai akhir masih harus dijalankan pemilik** (README A6) |
-| **8** | Gemini: batas 1×/hari, hanya mingguan/bulanan, payload agregat whitelisted, Zod, skip kalau invalid, simpan ke `ai_insights` (append-only), tombol "Minta analisis" + baca cache tanpa panggil API. | Lulus dengan `AI_ENABLED=false` dan dengan response invalid; insight tersimpan bisa dibaca ulang offline |
+| **8** | Gemini: empat gerbang (§12.0), payload agregat dengan daftar kunci tertutup, Zod, skip kalau invalid, simpan ke `ai_insights` (append-only), tombol "Minta analisis" + baca cache tanpa panggil API. | **Lulus.** `AI_ENABLED=false` → nol request (dibuktikan dengan `fetch` yang menggagalkan test kalau dipanggil); response invalid → dilewati, laporan tetap terkirim, tidak ada baris `ai_insights`; kuota kedua ditolak sebelum HTTP call |
 
 ---
 
@@ -807,9 +839,9 @@ Fase 2 lolos `test` + `typecheck` + `lint` + `build`, lalu setiap route menjawab
 | Lapisan | Yang diuji | Yang TIDAK bisa dilihat |
 |---|---|---|
 | **Unit** (`src/lib/**/*.test.ts`) | Matematika uang, waktu, state machine. Cepat, tanpa IO | Database, bundler, HTTP |
-| **Integrasi DB** (`tests/checkout.test.ts`, `tests/qris.test.ts`, `tests/catchup.test.ts`, `tests/db-integrity.test.ts`, `tests/backup.test.ts`) | Atomicity, race, rollback, constraint, catch-up dengan jam palsu. Memanggil fungsi service langsung | **Bundler dan route handler** — kode bisa benar tapi tidak pernah bisa dimuat Next.js |
-| **HTTP** (`tests/api-http.test.ts`, `tests/e2e-shift-refund.test.ts`, `tests/e2e-qris.test.ts`, `tests/e2e-reports.test.ts`, `tests/idempotency.test.ts`, `tests/e2e-fase7.test.ts`) | Server Next.js sungguhan: bundling, auth, Zod, status code, envelope error | Perilaku browser (klik, fokus, scanner) |
-| **Bentuk kode** (`src/lib/payment/no-auto-success.test.ts`, `src/lib/idempotency.test.ts`) | Larangan struktural: tidak ada timer di jalur pembayaran, hanya satu berkas yang menulis `paidAt`, tidak ada `crypto.randomUUID()` di `src/` | Apakah logikanya benar — ia hanya menjaga bentuknya |
+| **Integrasi DB** (`tests/checkout.test.ts`, `tests/qris.test.ts`, `tests/catchup.test.ts`, `tests/db-integrity.test.ts`, `tests/backup.test.ts`, `tests/ai.test.ts`, `tests/ai-disabled.test.ts`) | Atomicity, race, rollback, constraint, catch-up dengan jam palsu. Memanggil fungsi service langsung | **Bundler dan route handler** — kode bisa benar tapi tidak pernah bisa dimuat Next.js |
+| **HTTP** (`tests/api-http.test.ts`, `tests/e2e-shift-refund.test.ts`, `tests/e2e-qris.test.ts`, `tests/e2e-reports.test.ts`, `tests/idempotency.test.ts`, `tests/e2e-fase7.test.ts`, `tests/e2e-ai.test.ts`) | Server Next.js sungguhan: bundling, auth, Zod, status code, envelope error | Perilaku browser (klik, fokus, scanner) |
+| **Bentuk kode** (`src/lib/payment/no-auto-success.test.ts`, `src/lib/idempotency.test.ts`, `src/lib/ai/ai.test.ts`, `tests/test-hygiene.test.ts`) | Larangan struktural: tidak ada timer di jalur pembayaran, hanya satu berkas yang menulis `paidAt`, tidak ada `crypto.randomUUID()` di `src/`, `ai/payload.ts` hanya mengimpor `../report`, hanya `ai/service.ts` yang memanggil `callGemini`, tidak ada jalur AI di checkout, setiap test yang menjalankan server mengalihkan `BACKUP_DIR` | Apakah logikanya benar — ia hanya menjaga bentuknya |
 | **Manual browser** | Interaksi kasir sungguhan | — |
 
 Lapisan HTTP adalah yang paling mahal dan paling sering dilewati, dan justru satu-satunya yang bisa melihat kegagalan bundling. `tests/api-http.test.ts` menjalankan `next dev` sungguhan terhadap SQLite sementara, lalu menembak request nyata.
