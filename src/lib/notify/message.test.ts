@@ -91,6 +91,9 @@ describe('buildReportMessage — keunikan label baris', () => {
           transactionDiscount: 0,
           netTotal: 20_000,
           cogsTotal: 12_000,
+          passthroughTotal: 0,
+          serviceFeeTotal: 0,
+          services: [],
           paidMethod: 'CASH',
           items: [
             { productId: 'p1', productName: 'Kopi', qty: 2, lineFinal: 20_000, unitCost: 6_000 },
@@ -105,6 +108,9 @@ describe('buildReportMessage — keunikan label baris', () => {
           transactionDiscount: 0,
           netTotal: 15_000,
           cogsTotal: 9_000,
+          passthroughTotal: 0,
+          serviceFeeTotal: 0,
+          services: [],
           paidMethod: 'QRIS_STATIC',
           items: [
             { productId: 'p2', productName: 'Teh', qty: 1, lineFinal: 15_000, unitCost: 9_000 },

@@ -61,10 +61,29 @@ describe('canTransition — state machine pembayaran', () => {
 })
 
 describe('settlesImmediately', () => {
-  it('tunai selesai seketika, QRIS statis tidak', () => {
+  it('ketiga metode sekarang selesai seketika', () => {
+    // Test ini dulu berbunyi "QRIS statis TIDAK selesai seketika", dan itu benar
+    // untuk alur lama: layar menampilkan gambar QR, lalu kasir menekan tombol
+    // KEDUA setelah melihat notifikasi di HP-nya.
+    //
+    // Dengan QRIS soundbox, langkah pertamanya yang hilang: QR sudah tertempel
+    // di meja dan kotaknya berbunyi saat uang masuk, jadi kasir menekan tombol
+    // SETELAH bunyi. Pada saat ia menekan, uangnya sudah di rekening.
     expect(settlesImmediately('CASH')).toBe(true)
-    // Tidak boleh ada jalur yang menandai QRIS statis lunas tanpa aksi manusia.
-    expect(settlesImmediately('QRIS_STATIC')).toBe(false)
+    expect(settlesImmediately('CASH_OUT')).toBe(true)
+    expect(settlesImmediately('QRIS_STATIC')).toBe(true)
+  })
+
+  it('yang TIDAK berubah: tidak ada jalur yang melunaskan tanpa aksi manusia', () => {
+    // Larangan aslinya tetap berlaku dan dijaga di tempat lain:
+    //  - src/lib/payment/no-auto-success.test.ts memindai seluruh jalur
+    //    pembayaran untuk memastikan tidak ada timer/interval,
+    //  - canTransition + guarded update menolak pelunasan ganda.
+    //
+    // `settlesImmediately` menjawab "apakah uangnya sudah berpindah saat baris
+    // dibuat", bukan "apakah sistem boleh melunaskan sendiri". Keduanya beda,
+    // dan yang kedua tetap tidak.
+    expect(settlesImmediately('QRIS_STATIC')).toBe(true)
   })
 })
 

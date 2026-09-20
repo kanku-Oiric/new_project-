@@ -84,7 +84,7 @@ export async function collectReportInput(
 ): Promise<ReportInput> {
   const where = { businessDate: { gte: range.from, lte: range.to } }
 
-  const [transactions, refunds, expenses, shifts, products] = await Promise.all([
+  const [transactions, refunds, expenses, shifts, products, providers] = await Promise.all([
     db.transaction.findMany({
       where,
       include: {
@@ -95,6 +95,17 @@ export async function collectReportInput(
             qty: true,
             lineFinal: true,
             unitCost: true,
+          },
+        },
+        services: {
+          select: {
+            kind: true,
+            label: true,
+            direction: true,
+            providerName: true,
+            passthroughAmount: true,
+            serviceFeeAmount: true,
+            providerCostAmount: true,
           },
         },
         payments: { select: { method: true, status: true } },
@@ -116,6 +127,14 @@ export async function collectReportInput(
       select: { nama: true, stok: true, stokMinimum: true, satuan: true },
       orderBy: { nama: 'asc' },
     }),
+    // Saldo provider SEKARANG, bukan saldo di akhir periode. Alasannya sama
+    // seperti stok di atas: yang berguna bagi pemilik adalah "saldo Shopee
+    // tinggal segini", dan label di pesannya menyebutkan hal itu.
+    db.serviceProvider.findMany({
+      where: { aktif: true },
+      select: { nama: true, saldo: true },
+      orderBy: [{ urutan: 'asc' }, { nama: 'asc' }],
+    }),
   ])
 
   return {
@@ -128,8 +147,11 @@ export async function collectReportInput(
       transactionDiscount: t.transactionDiscount,
       netTotal: t.netTotal,
       cogsTotal: t.cogsTotal,
+      passthroughTotal: t.passthroughTotal,
+      serviceFeeTotal: t.serviceFeeTotal,
       paidMethod: parsePaidMethod(t.payments.find((p) => p.status === 'PAID')?.method),
       items: t.items,
+      services: t.services,
     })),
     refunds: refunds.map((r) => ({
       id: r.id,
@@ -162,6 +184,7 @@ export async function collectReportInput(
         stokMinimum: p.stokMinimum,
         satuan: p.satuan,
       })),
+    providerBalances: providers.map((p) => ({ providerName: p.nama, saldo: p.saldo })),
   }
 }
 

@@ -183,6 +183,21 @@ model Transaction {
   voidReason     String?
   cancelReason   String? // diisi saat auto-cancel di penutupan shift
 
+  // ── JASA PEMBAYARAN ──
+  //
+  // `netTotal` di atas tetap berarti OMZET. Titipan pelanggan yang diteruskan ke
+  // provider TIDAK ikut ke sana, melainkan ke kolom sendiri di bawah — supaya
+  // titipan tidak punya jalur apa pun menuju Gross Sales. Konsekuensinya yang
+  // harus disadari: `Payment.amount` TIDAK lagi sama dengan `netTotal`, ia sama
+  // dengan `netTotal + passthroughTotal` (docs/reporting.md §9).
+  //
+  // BERTANDA: positif = pelanggan menyerahkan uang titipan (token listrik, PLN,
+  // top-up). Negatif = toko yang menyerahkan uang tunai (tarik tunai).
+  passthroughTotal Int @default(0)
+  // Σ biaya admin. Ini BAGIAN DARI netTotal, bukan tambahan — disimpan terpisah
+  // supaya laporan bisa menyebut pendapatan jasa tanpa menghitung ulang.
+  serviceFeeTotal  Int @default(0)
+
   // Kunci sekali-pakai dari kasir. Nullable + @unique: SQLite mengizinkan banyak
   // NULL pada unique, jadi client lama yang tidak mengirim kunci tetap jalan,
   // sementara yang mengirim kunci dijaga DB — bukan cuma dijaga kode.
@@ -191,9 +206,10 @@ model Transaction {
   // berbeda DITOLAK, bukan dijawab dengan struk transaksi lain.
   idempotencyFingerprint String?
 
-  shift    Shift             @relation(fields: [shiftId], references: [id], onDelete: Restrict)
-  cashier  User              @relation(fields: [cashierId], references: [id], onDelete: Restrict)
+  shift    Shift                @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  cashier  User                 @relation(fields: [cashierId], references: [id], onDelete: Restrict)
   items    TransactionItem[]
+  services TransactionService[]
   payments Payment[]
   refunds  Refund[]
 
@@ -431,4 +447,103 @@ model StartupLock {
   expiresAt DateTime
 
   @@map("startup_locks")
+}
+
+
+// ─────────────────────────────── JASA PEMBAYARAN ───────────────────────────────
+//
+// Toko menjual jasa pembayaran: token listrik, PLN pascabayar, PDAM, top-up
+// e-wallet, transfer bank, tarik tunai. Kasir membayarnya lewat aplikasi lain
+// (Shopee/GoPay). Sistem ini TIDAK memanggil API provider mana pun — murni
+// pencatatan (docs/architecture.md §21).
+
+model ServiceProvider {
+  id        String   @id @default(uuid())
+  nama      String   @unique // "Shopee", "GoPay", "BRI"
+  jenis     String // "EWALLET"|"BANK"|"PPOB"
+  // Saldo di aplikasi provider, terpisah dari laci kas. HANYA boleh berubah
+  // lewat applyProviderMovement(), sama seperti products.stok hanya boleh
+  // berubah lewat applyStockMovement().
+  saldo     Int      @default(0)
+  urutan    Int      @default(0) // urutan tombol di layar kasir
+  aktif     Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  movements ProviderBalanceMovement[]
+  services  TransactionService[]
+
+  @@map("service_providers")
+}
+
+model ProviderBalanceMovement {
+  id            String  @id @default(uuid())
+  providerId    String
+  amountChange  Int // BERTANDA: positif = saldo masuk, negatif = saldo keluar
+  reason        String // "INITIAL"|"TOPUP"|"SERVICE"|"SERVICE_FAILED"|"ADJUSTMENT"
+  balanceBefore Int
+  balanceAfter  Int
+  // Hanya untuk reason TOPUP: "CASH_DRAWER" berarti uangnya diambil dari laci,
+  // sehingga expected cash shift berkurang. Top-up BUKAN pengeluaran — ia
+  // perpindahan kantong, jadi ia tidak pernah muncul di laporan pengeluaran
+  // maupun mengurangi laba (docs/reporting.md §9.2).
+  paidFrom      String?
+  refType       String? // "TRANSACTION"|"MANUAL"
+  refId         String?
+  userId        String
+  shiftId       String?
+  businessDate  String
+  note          String?
+
+  createdAt DateTime @default(now())
+
+  // Top-up saldo yang tercatat dua kali adalah uang laci yang salah. Dijaga
+  // sejak baris pertama, bukan ditambahkan belakangan seperti pada expenses.
+  idempotencyKey         String? @unique
+  idempotencyFingerprint String?
+
+  provider ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@index([providerId, createdAt])
+  @@index([businessDate])
+  @@index([reason])
+  @@index([refType, refId])
+  @@map("provider_balance_movements")
+}
+
+model TransactionService {
+  id            String @id @default(uuid())
+  transactionId String
+
+  kind      String // "TOKEN_LISTRIK"|"PLN_PASCABAYAR"|"PDAM"|"EWALLET_TOPUP"|"TRANSFER_BANK"|"TARIK_TUNAI"
+  // SNAPSHOT, bukan diturunkan dari `kind` saat dibaca. Pemetaan jenis→arah bisa
+  // berubah; sejarah tidak boleh ikut berubah. Alasan yang sama seperti unitCost.
+  direction String // "PROVIDER_OUT" (pelanggan bayar) | "PROVIDER_IN" (toko bayar)
+  label     String // snapshot nama jasa saat dijual
+
+  providerId   String
+  providerName String // SNAPSHOT
+
+  // SELALU POSITIF. Arahnya ditentukan `direction`, bukan tanda angkanya —
+  // angka bertanda akan menabrak assertRupiah di seluruh modul murni dan
+  // menyebarkan "uang negatif" ke tempat yang tidak siap menerimanya.
+  passthroughAmount Int
+  // Pendapatan toko. Ini yang masuk Gross Sales, dan HANYA ini.
+  serviceFeeAmount  Int
+  // Potongan yang diambil provider dari toko, kalau ada. Masuk COGS, sehingga
+  // laba kotor jasa = serviceFeeAmount − providerCostAmount.
+  providerCostAmount Int @default(0)
+
+  // Nomor meter / nomor HP / nomor rekening tujuan. Satu-satunya data pelanggan
+  // yang disimpan sistem ini, dan dikecualikan dari payload AI oleh penjaga
+  // struktural (src/lib/ai/ai.test.ts).
+  customerRef String?
+  note        String?
+
+  transaction Transaction     @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  provider    ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@index([transactionId])
+  @@index([kind])
+  @@map("transaction_services")
 }

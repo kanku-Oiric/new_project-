@@ -177,9 +177,16 @@ expectedCash = openingCash
              − cashRefunds    (Σ Refund.amount   WHERE method=CASH AND shiftId = shift ini)
              − cashExpenses   (Σ Expense.amount  WHERE paidFrom='CASH_DRAWER'
                                                  AND deletedAt IS NULL)
+             − cashProviderTopups  (Σ ProviderBalanceMovement.amountChange
+                                                 WHERE reason='TOPUP' AND paidFrom='CASH_DRAWER')
+             − cashServicePayouts  (Σ Payment.amount  WHERE method='CASH_OUT' AND status='PAID')
 
 difference   = countedCash − expectedCash
 ```
+
+Dua suku terakhir datang bersama jasa pembayaran; rinciannya di §9.3. Keduanya
+berlaku nol untuk toko yang belum memakai jasa, jadi rumus di atas tetap sama
+persis seperti sebelumnya untuk seluruh shift lama.
 
 Tiga hal yang mudah salah di sini:
 
@@ -365,3 +372,70 @@ Yang dipakai scheduler hanyalah jeda pemeriksaan: berdetak tiap menit, tetapi ca
 | Agregasi | JS `number` (aman sampai 2^53); **tidak pernah** disimpan sebagai kolom `Int` |
 | Pembagian (rata-rata, persentase) | Hanya di layer tampilan. Pembagi 0 → `—`, bukan `0`/`NaN`/`∞` |
 | Persentase | Dihitung dari integer, ditampilkan 1 desimal. Tidak pernah dipakai untuk menghitung ulang nominal |
+
+
+---
+
+## 9. Jasa pembayaran
+
+Toko menjual token listrik, PLN, PDAM, top-up e-wallet, transfer bank, dan tarik tunai. Uang pelanggan untuk ketujuh hal itu **mampir** di laci lalu diteruskan ke provider — ia bukan omzet, dan menyebutnya omzet akan membuat pemilik mengira tokonya beromzet puluhan juta sebulan dari uang yang bukan miliknya.
+
+### 9.1 Definisi
+
+```
+Gross Sales    = Σ (unitPrice × qty)  +  Σ serviceFeeAmount
+Discounts      = Σ itemDiscount + Σ transactionDiscount     # jasa TIDAK ikut didiskon
+Net Sales      = Gross Sales − Discounts
+Passthrough    = Σ passthroughAmount        # TITIPAN — bukan omzet
+Uang Ditangani = Net Sales + Passthrough    # yang benar-benar lewat laci
+COGS           = Σ (unitCost × qty) + Σ providerCostAmount
+Gross Profit   = Net Sales − COGS
+```
+
+Contoh satu transaksi, dan tiga angka yang tidak boleh tertukar:
+
+```
+Token listrik Rp 100.000, biaya admin Rp 2.500, provider tidak memotong
+
+  Gross Sales        2.500      ← hanya biaya adminnya
+  Passthrough      100.000      ← dilaporkan TERPISAH
+  Uang Ditangani   102.500      ← yang diserahkan pelanggan, masuk laci
+  COGS                   0
+  Gross Profit       2.500
+```
+
+### 9.2 Tiga hal yang akan dibaca sebagai bug kalau tidak tertulis
+
+1. **Margin kotor akan tampak naik** begitu jasa dipakai, karena biaya admin masuk Net Sales dengan HPP nol. Itu benar — biaya admin memang murni margin — tapi angka bulan depan akan terlihat mencurigakan tanpa sebab kalau hal ini tidak disebut.
+
+2. **Diskon transaksi dialokasikan hanya atas baris barang.** Menurunkan titipan mustahil (provider tetap dibayar penuh), dan diskon atas biaya admin lebih jujur dengan mengisi biaya adminnya lebih kecil — karena angka yang tercetak di struk itulah yang jadi dasar refund. Keranjang berisi jasa saja menolak `transactionDiscount > 0`.
+
+3. **Rincian per metode bayar memakai UANG YANG BERPINDAH, bukan omzet.** Angka itu harus bisa dicocokkan dengan hitungan fisik laci; kalau ia memakai `netTotal`, angka tunai di laporan akan lebih kecil daripada uang yang benar-benar ada sebesar seluruh titipan hari itu. Labelnya menyebutkannya: *"Metode pembayaran (uang yang berpindah, termasuk titipan jasa)"*.
+
+### 9.3 Top-up saldo provider bukan pengeluaran
+
+Mengisi saldo Shopee dari laci adalah **perpindahan kantong**. Ia tidak muncul di laporan pengeluaran dan tidak mengurangi laba, tetapi ia mengurangi uang di laci — jadi ia punya sukunya sendiri di `expectedCash` (§4).
+
+```
+expectedCash = openingCash
+             + cashSales             (Σ Payment.amount — sudah termasuk titipan tunai diterima)
+             − cashRefunds
+             − cashExpenses
+             − cashProviderTopups    (top-up dengan paidFrom = CASH_DRAWER)
+             − cashServicePayouts    (uang tunai yang DISERAHKAN pada tarik tunai)
+```
+
+Dua suku terakhir ditampilkan sebagai baris tersendiri di ringkasan shift, bukan di-net ke penjualan tunai. Selisih kas yang tidak bisa ditelusuri ke barisnya adalah selisih yang akan disalahkan ke orangnya.
+
+### 9.4 Bagian laporan yang baru
+
+| Bagian | Isi |
+|---|---|
+| Jasa pembayaran (titipan BUKAN omzet) | Per jenis: jumlah transaksi, Σ titipan, Σ biaya admin. Ditutup baris "Pendapatan admin (masuk omzet)" dan "Titipan diteruskan ke provider" |
+| Saldo provider | Saldo tiap provider **saat laporan dibuat** — bukan saldo di akhir periode. Labelnya menyebutkannya, sama seperti daftar stok di bawah minimum |
+
+Saldo provider sengaja tidak dihitung ulang per tanggal. Seluruh angka lain di laporan bisa dihitung ulang untuk tanggal apa pun; yang ini adalah keadaan sekarang, dan gunanya sebagai pengingat (*"saldo Shopee tinggal 40 ribu"*), bukan sebagai angka historis.
+
+### 9.5 Yang tidak keluar dari toko
+
+Nomor meter, nomor HP, dan nomor rekening pelanggan (`customerRef`) tersimpan di baris transaksi, tapi **tidak punya jalur** ke `SalesAggregate` — agregasi hanya menjumlahkan angka per jenis jasa. Karena itu ia juga tidak punya jalur ke payload AI maupun ke pesan laporan yang dikirim ke Discord/Telegram. Nama provider pun tidak ikut ke payload AI.

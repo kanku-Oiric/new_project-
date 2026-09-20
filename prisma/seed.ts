@@ -179,6 +179,26 @@ async function main(): Promise<void> {
     }
   }
 
+  // ── Provider jasa pembayaran ───────────────────────────────────────────
+  //
+  // Saldo awal NOL dengan sengaja. Angka saldo adalah uang sungguhan yang duduk
+  // di aplikasi milik toko; mengisinya dengan angka contoh akan membuat
+  // rekonsiliasi pertama menunjukkan selisih yang tidak pernah terjadi.
+  const PROVIDERS = [
+    { nama: 'Shopee', jenis: 'EWALLET', urutan: 1 },
+    { nama: 'GoPay', jenis: 'EWALLET', urutan: 2 },
+    { nama: 'Dana', jenis: 'EWALLET', urutan: 3 },
+  ]
+
+  let createdProviders = 0
+  for (const p of PROVIDERS) {
+    const existing = await prisma.serviceProvider.findUnique({ where: { nama: p.nama } })
+    if (!existing) {
+      await prisma.serviceProvider.create({ data: { ...p, saldo: 0 } })
+      createdProviders++
+    }
+  }
+
   const totalProducts = await prisma.product.count()
   const totalUsers = await prisma.user.count()
 
@@ -187,6 +207,7 @@ async function main(): Promise<void> {
   console.log(`    User      : ${totalUsers} total`)
   console.log(`    Produk    : ${totalProducts} total (${createdProducts} baru)`)
   console.log(`    Settings  : ${createdSettings} baru`)
+  console.log(`    Provider  : ${createdProviders} baru (saldo 0 — isi lewat halaman Saldo)`)
   console.log('')
   console.log('  PIN PENGEMBANGAN — WAJIB DIGANTI sebelum dipakai di toko:')
   for (const u of USERS) {

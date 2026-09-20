@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/auth/session'
 import { prisma } from '@/lib/db/prisma'
 import { providerForMethod } from '@/lib/payment/registry'
+import { listServiceProviders } from '@/lib/provider/service'
 import { getSetting } from '@/lib/settings'
 import { KasirClient } from './kasir-client'
 
@@ -47,15 +48,23 @@ export default async function KasirPage() {
   // Satu sumber kalimat berarti layar kasir tidak bisa mengklaim lebih dari yang
   // sebenarnya aktif (docs/qris.md §3.2).
   const qrisProvider = providerForMethod('QRIS_STATIC')
-  const [qrisReadiness, qrisImage] = await Promise.all([
+  const [qrisReadiness, providers, serviceFees] = await Promise.all([
     qrisProvider.describe(),
-    getSetting('qrisImagePath'),
+    listServiceProviders(),
+    getSetting('serviceFeeDefaults'),
   ])
 
   return (
     <KasirClient
       initialProducts={products}
       initialKategori={kategori.map((k) => k.kategori)}
+      initialProviders={providers.map((p) => ({
+        id: p.id,
+        nama: p.nama,
+        jenis: p.jenis,
+        saldo: p.saldo,
+      }))}
+      serviceFees={serviceFees}
       cashierName={session.name}
       role={session.role}
       qris={{
@@ -63,7 +72,6 @@ export default async function KasirPage() {
         label: qrisReadiness.label,
         hint: qrisReadiness.hint,
       }}
-      qrisImageUrl={qrisImage ? `/api/uploads/${qrisImage}` : null}
     />
   )
 }

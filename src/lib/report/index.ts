@@ -39,18 +39,35 @@ export interface ReportItemRow {
   unitCost: number
 }
 
+export interface ReportServiceRow {
+  kind: string
+  label: string
+  direction: string
+  providerName: string
+  passthroughAmount: number
+  serviceFeeAmount: number
+  providerCostAmount: number
+}
+
 export interface ReportTransactionRow {
   id: string
   businessDate: string
   status: TransactionStatus
+  /** Σ (unitPrice × qty) + Σ biaya admin jasa. OMZET. */
   grossSubtotal: number
   itemDiscountTotal: number
   transactionDiscount: number
+  /** OMZET transaksi. Titipan jasa TIDAK ada di sini (docs/reporting.md §9). */
   netTotal: number
   cogsTotal: number
+  /** BERTANDA. Titipan yang diteruskan ke provider; negatif untuk tarik tunai. */
+  passthroughTotal: number
+  /** Σ biaya admin. Bagian DARI netTotal. */
+  serviceFeeTotal: number
   /** Metode pembayaran yang berstatus PAID. null kalau belum/tidak pernah lunas. */
   paidMethod: PaymentMethod | null
   items: ReportItemRow[]
+  services: ReportServiceRow[]
 }
 
 export interface ReportRefundRow {
@@ -92,6 +109,15 @@ export interface ReportInput {
   expenses: ReportExpenseRow[]
   shifts: ReportShiftRow[]
   stock: ReportStockRow[]
+  /**
+   * Saldo provider SAAT INI, bukan saat periode laporan berakhir.
+   *
+   * Dibedakan dengan sengaja dari angka lain di laporan, yang semuanya bisa
+   * dihitung ulang untuk tanggal apa pun. Saldo adalah keadaan sekarang, dan
+   * laporan menampilkannya sebagai pengingat ("saldo Shopee tinggal 40 ribu"),
+   * bukan sebagai angka historis. Kosong berarti toko belum memakai jasa.
+   */
+  providerBalances?: ProviderBalanceRow[]
 }
 
 // ─────────────────────────────── Bentuk hasil ───────────────────────────────
@@ -119,6 +145,23 @@ export interface TopProductProfit {
   qty: number
 }
 
+export interface ServiceKindSummary {
+  kind: string
+  label: string
+  count: number
+  /** Σ titipan, selalu positif — volume uang yang lewat, bukan omzet. */
+  passthrough: number
+  /** Σ biaya admin. INI yang omzet. */
+  fee: number
+  /** Σ potongan provider. */
+  providerCost: number
+}
+
+export interface ProviderBalanceRow {
+  providerName: string
+  saldo: number
+}
+
 export interface SalesAggregate {
   /** Σ unitPrice × qty, sebelum diskon apa pun. OMZET, bukan laba. */
   grossSales: number
@@ -144,6 +187,26 @@ export interface SalesAggregate {
   averageTransaction: number | null
 
   byMethod: MethodBreakdown[]
+
+  // ── JASA PEMBAYARAN ──
+  //
+  // Angka-angka ini SENGAJA berdiri sendiri dan tidak pernah dijumlahkan ke
+  // grossSales atau netSales. Titipan adalah uang pelanggan yang cuma mampir di
+  // laci sebelum diteruskan ke provider; menyebutnya omzet akan membuat pemilik
+  // mengira tokonya beromzet puluhan juta dari uang yang bukan miliknya.
+  //
+  // Yang MASUK omzet hanya `serviceFees`, dan ia sudah termasuk di dalam
+  // `netSales` — ditampilkan lagi di sini supaya bisa disebut terpisah, bukan
+  // untuk dijumlahkan ulang.
+  serviceFees: number
+  /** Titipan yang diterima dari pelanggan (token, PLN, top-up, transfer). */
+  passthroughOut: number
+  /** Titipan yang masuk ke rekening toko lalu dibayar tunai (tarik tunai). */
+  passthroughIn: number
+  serviceCount: number
+  servicesByKind: ServiceKindSummary[]
+  /** Saldo provider saat laporan dibuat. Kosong kalau toko belum memakai jasa. */
+  providerBalances: ProviderBalanceRow[]
 
   expenseTotal: number
   expenseFromCashDrawer: number
@@ -199,7 +262,13 @@ export function aggregateSales(
   let voidCount = 0
   let cancelledCount = 0
 
+  let serviceFees = 0
+  let passthroughOut = 0
+  let passthroughIn = 0
+  let serviceCount = 0
+
   const byMethod = new Map<PaymentMethod, { count: number; amount: number }>()
+  const perServiceKind = new Map<string, ServiceKindSummary>()
   const perProduct = new Map<
     string,
     { productName: string; qty: number; netSales: number; cogs: number }
@@ -231,8 +300,37 @@ export function aggregateSales(
     if (trx.paidMethod) {
       const entry = byMethod.get(trx.paidMethod) ?? { count: 0, amount: 0 }
       entry.count++
-      entry.amount += trx.netTotal
+      // UANG YANG BERPINDAH, bukan omzet: `netTotal + passthroughTotal`.
+      //
+      // Rincian per metode bayar menjawab "berapa yang masuk laci dan berapa
+      // yang masuk rekening", dan jawabannya harus bisa dicocokkan dengan
+      // hitungan fisik laci. Memakai netTotal akan membuat angka tunai di
+      // laporan lebih kecil daripada uang yang benar-benar ada, sebesar seluruh
+      // titipan hari itu.
+      entry.amount += trx.netTotal + trx.passthroughTotal
       byMethod.set(trx.paidMethod, entry)
+    }
+
+    serviceFees += trx.serviceFeeTotal
+
+    for (const jasa of trx.services) {
+      serviceCount++
+      if (jasa.direction === 'PROVIDER_IN') passthroughIn += jasa.passthroughAmount
+      else passthroughOut += jasa.passthroughAmount
+
+      const acc = perServiceKind.get(jasa.kind) ?? {
+        kind: jasa.kind,
+        label: jasa.label,
+        count: 0,
+        passthrough: 0,
+        fee: 0,
+        providerCost: 0,
+      }
+      acc.count++
+      acc.passthrough += jasa.passthroughAmount
+      acc.fee += jasa.serviceFeeAmount
+      acc.providerCost += jasa.providerCostAmount
+      perServiceKind.set(jasa.kind, acc)
     }
 
     for (const item of trx.items) {
@@ -317,6 +415,15 @@ export function aggregateSales(
     byMethod: [...byMethod.entries()]
       .map(([method, v]) => ({ method, count: v.count, amount: v.amount }))
       .sort((a, b) => b.amount - a.amount),
+
+    serviceFees,
+    passthroughOut,
+    passthroughIn,
+    serviceCount,
+    servicesByKind: [...perServiceKind.values()].sort(
+      (a, b) => b.fee - a.fee || a.label.localeCompare(b.label),
+    ),
+    providerBalances: input.providerBalances ?? [],
 
     expenseTotal,
     expenseFromCashDrawer,

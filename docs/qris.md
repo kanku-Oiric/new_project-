@@ -1,6 +1,6 @@
 # QRIS — Provider Pembayaran
 
-> Status: **Terpasang di Fase 5, state machine void diperketat setelah audit integritas.** Dokumen ini menggambarkan kode yang benar-benar ada, bukan rencana. Bagian §5 (provider dinamis) tetap berupa panduan untuk nanti dan ditandai apa adanya. Pendamping `architecture.md`.
+> Status: **Terpasang di Fase 5, state machine void diperketat setelah audit integritas, lalu disederhanakan menjadi alur satu langkah saat toko memakai QRIS soundbox.** Dokumen ini menggambarkan kode yang benar-benar ada, bukan rencana. Bagian §5 (provider dinamis) tetap berupa panduan untuk nanti dan ditandai apa adanya. Pendamping `architecture.md`.
 
 ---
 
@@ -8,7 +8,20 @@
 
 **v1 tidak tersambung ke payment gateway mana pun.** Tidak ada Midtrans, tidak ada Xendit, tidak ada webhook, tidak ada pengecekan status otomatis.
 
-Yang ada adalah `StaticQrisProvider`: menampilkan gambar QR statis milik toko, dan kasir menekan tombol konfirmasi setelah melihat notifikasi masuk di HP-nya. Itu saja, dan itu memang cukup untuk toko kecil yang sudah punya QRIS statis dari banknya.
+Yang ada adalah `StaticQrisProvider`, dan sejak toko memakai **QRIS soundbox** bentuknya jadi jauh lebih sederhana: QR tertempel permanen di meja, kotaknya berbunyi saat pembayaran masuk, dan kasir menekan tombol QRIS **setelah** mendengar bunyinya.
+
+Yang berubah bukan kodenya lebih dulu, melainkan tokonya:
+
+```
+dulu   kasir tekan QRIS → layar menampilkan gambar QR → pelanggan scan →
+       kasir dengar notifikasi di HP → kasir tekan "Pembayaran diterima"
+
+kini   pelanggan scan QR di meja → soundbox berbunyi → kasir tekan QRIS
+```
+
+Pada saat kasir menekan tombolnya, uangnya **sudah** masuk. Langkah kedua yang dulu ada bukan pengaman — ia sumber transaksi terlantar saat kasir lupa menekannya, dan itulah yang selama ini dibersihkan auto-cancel saat tutup shift.
+
+Yang hilang bersama alur itu: modal QR di layar kasir, setting `qrisImagePath`, dan route unggah gambarnya. Yang **tidak** hilang: `PaymentProvider`, state machine, `canTransition`, guarded update, dan jalur `PENDING → PAID` — semuanya tinggal utuh untuk provider dinamis nanti.
 
 Tujuan seluruh desain di dokumen ini adalah: **saat provider asli ditambahkan nanti, kode transaksi tidak berubah sama sekali.**
 
@@ -68,61 +81,55 @@ Provider dibuat lewat factory yang menerima `ProviderDeps`, bukan mengimpor Pris
 
 ---
 
-## 3. `StaticQrisProvider` — alur v1
+## 3. `StaticQrisProvider` — alur v1 (satu langkah)
 
 ```
-┌─ Kasir menekan "Bayar dengan QRIS" di layar pembayaran
-│     └─ tombolnya mati kalau QRIS belum dikonfigurasi, DENGAN keterangan
+┌─ Pelanggan scan QR yang tertempel di meja, lalu membayar
+│
+├─ Soundbox berbunyi  ← inilah konfirmasinya, dan ia datang dari bank
+│
+┌─ Kasir menekan "Sudah bayar QRIS" di layar pembayaran
+│     └─ tombolnya mati kalau QRIS belum dinyalakan, DENGAN keterangan
 │        alasannya — bukan sekadar disabled
 │
 ├─ POST /api/transactions  { method: 'QRIS_STATIC', ... }
 │     └─ provider belum siap → 400, tidak ada apa pun yang tertulis
-│     └─ satu DB transaction:
+│     └─ satu DB transaction, sama persis seperti tunai:
 │          Transaction  status = PENDING
 │          TransactionItem[]   (snapshot harga & HPP)
 │          Payment      status = PENDING, providerName = 'qris-static'
-│        ── STOK BELUM BERKURANG ──
-│
-├─ Layar menampilkan: gambar QR statis toko (setting `qrisImagePath`)
-│                     + nominal yang harus dibayar, huruf besar
-│                     + kalimat "Sistem tidak memeriksa pembayaran secara otomatis"
-│                     + tombol [Pembayaran diterima]  [Batalkan]
-│
-├─ Pelanggan scan & bayar → kasir melihat notifikasi masuk di HP-nya sendiri
-│
-├─ Kasir menekan [Pembayaran diterima]
-│     └─ POST /api/payments/:id/confirm      (tanpa body)
-│          └─ requireSession()               ← tidak ada konfirmasi anonim
-│          └─ settleTransactionInTx():
+│          settleTransactionInTx():
 │               Payment PENDING → PAID   (lapis 1 + guarded update)
 │               stok berkurang + stock_movements (reason SALE)
+│               saldo provider bergerak, kalau ada baris jasa (§21.3 architecture)
 │               Transaction → COMPLETED
-│               AuditLog PAYMENT_CONFIRM  ← siapa yang mengonfirmasi, tercatat
+│               AuditLog PAYMENT_CONFIRM  ← siapa yang menekan, tercatat
 │
 └─ Struk siap dicetak, keranjang kembali kosong
 ```
 
-Kalau kasir menekan [Batalkan]: `POST /api/payments/:id/cancel` → pembayaran `CANCELLED`, transaksi `CANCELLED`, **keranjang di layar dibiarkan utuh** supaya bisa langsung dilanjutkan dengan tunai. Pembatalan tidak butuh PIN pemilik: tidak ada uang yang berpindah dan tidak ada stok yang bergerak. Yang dicatat adalah siapa yang membatalkan.
+Satu langkah **tidak** berarti satu penjaga lebih sedikit. Yang ditempuh persis jalur tunai: `canTransition` memilih baris yang boleh dilunaskan, guarded update di database yang memutuskan pemenang saat dua request bersamaan, dan kunci sekali-pakai tetap berlaku.
 
-### 3.1 Kenapa stok baru berkurang saat PAID
-Transaksi QRIS yang batal (pelanggan berubah pikiran, HP-nya bermasalah) tidak boleh meninggalkan stok yang berkurang. Dengan menunda pengurangan stok sampai `PAID`, transaksi `PENDING` yang ditinggalkan tidak punya efek samping apa pun — cukup `CANCELLED`, tanpa perlu membalik stok.
+### 3.1 Kenapa stok berkurang bersamaan dengan PAID
 
-Konsekuensi yang diterima: ada jeda antara QR ditampilkan dan stok berkurang, sehingga dua kasir bisa sama-sama menampilkan QR untuk barang terakhir. Karena stok minus diizinkan (`architecture.md` §8), keduanya tetap bisa lanjut dan stok menjadi negatif — muncul di bagian "stok perlu diperiksa" pada laporan. Ini pilihan yang benar untuk toko: tidak menahan pembayaran yang sudah masuk hanya karena angka stok.
+Dulu stok sengaja ditunda sampai `PAID`, supaya transaksi `PENDING` yang ditinggalkan pelanggan tidak meninggalkan stok yang berkurang. Penundaan itu tidak lagi diperlukan: tidak ada jeda antara "QR ditampilkan" dan "kasir mengonfirmasi", karena QR-nya tidak pernah ditampilkan dan kasir menekan tombolnya setelah uangnya masuk.
+
+Yang tersisa dari alasan lama tetap berlaku untuk provider dinamis nanti, dan kodenya tidak dihapus: `createTransactionInTx` tetap tidak menyentuh stok, dan `settleTransactionInTx` tetap satu-satunya yang menguranginya.
 
 ### 3.2 Larangan keras, dan bagaimana masing-masing ditegakkan
 
 Tiga hal ini **tidak boleh** ada di dalam kode, dalam bentuk apa pun:
 
 1. ❌ **Mock yang otomatis sukses setelah beberapa detik.** Tidak ada `setTimeout` yang mengubah status menjadi `PAID`. Tidak ada di dev, tidak ada di test fixture yang bisa bocor ke produksi.
-2. ❌ **Menandai `PAID` tanpa aksi konfirmasi eksplisit.** Satu-satunya jalan menuju `PAID` untuk `StaticQrisProvider` adalah request HTTP yang dipicu manusia menekan tombol, dengan session terautentikasi, dan `confirmedByUserId` tercatat.
-3. ❌ **Mengklaim "QRIS tersambung"** di UI mana pun. Halaman pengaturan menampilkan keadaan sebenarnya: `QRIS statis aktif (konfirmasi manual kasir)` — bukan "terintegrasi".
+2. ❌ **Menandai `PAID` tanpa aksi manusia.** Satu-satunya jalan menuju `PAID` untuk `StaticQrisProvider` tetap request HTTP yang dipicu manusia menekan tombol, dengan session terautentikasi, dan `confirmedByUserId` tercatat. Yang berubah adalah JUMLAH tombolnya — dari dua menjadi satu — bukan siapa yang menekannya.
+3. ❌ **Mengklaim "QRIS tersambung"** di UI mana pun. Halaman pengaturan menampilkan keadaan sebenarnya: `QRIS soundbox aktif (kasir menekan setelah bunyi)` — bukan "terintegrasi", dan bukan pula "otomatis". Bunyinya datang dari kotak milik bank; sistem ini tidak mendengarnya dan tidak pernah tahu sendiri uangnya masuk.
 
 Ketiganya punya test, karena larangan tanpa test hanyalah niat baik:
 
 | Larangan | Yang menegakkannya |
 |---|---|
-| 1 — tanpa timer | `src/lib/payment/no-auto-success.test.ts` memindai kode sumber `src/lib/payment`, `src/lib/checkout`, `src/app/api/payments`, layar kasir, dan layar QRIS; satu `setTimeout` di sana membuat test gagal dan menyebut nama berkasnya. Ditambah `tests/e2e-qris.test.ts` langkah 10: membuat transaksi, **tidak melakukan apa pun selama 3 detik**, lalu memastikan statusnya masih `PENDING`. |
-| 2 — PAID butuh manusia | `tests/e2e-qris.test.ts` langkah 11: konfirmasi tanpa cookie → `401`, status tetap `PENDING`. Langkah 12: dua konfirmasi bersamaan → satu `200`, satu `409`, `confirmedByUserId` terisi. `tests/qris.test.ts` memastikan `paidAt` dan `confirmedByUserId` tidak pernah null setelah lunas. |
+| 1 — tanpa timer | `src/lib/payment/no-auto-success.test.ts` memindai kode sumber `src/lib/payment`, `src/lib/checkout`, `src/app/api/payments`, dan layar kasir; satu `setTimeout` di sana membuat test gagal dan menyebut nama berkasnya. Ditambah `tests/qris.test.ts`: membaca status 20 kali berturut-turut tidak pernah memajukan `PENDING` menjadi `PAID`. |
+| 2 — PAID butuh manusia | `tests/e2e-qris.test.ts` nomor 7: `confirmedByUserId` terisi id kasir yang login. Nomor 13: konfirmasi tanpa cookie → `401`. Nomor 9: konfirmasi ulang atas yang sudah lunas → `409`, stok tidak berkurang dua kali. Nomor 12: baris `PENDING` (jalur provider dinamis) masih dilunaskan lewat `/confirm` dengan session. |
 | 3 — tanpa klaim palsu | `src/lib/payment/providers.test.ts` memeriksa bahwa label dan hint provider **tidak pernah** memuat kata "terintegrasi", "tersambung", atau "otomatis", pada keadaan siap maupun belum. |
 
 Satu test lagi menjaga bentuk sistemnya: **hanya satu berkas di seluruh `src/` yang boleh menulis `paidAt`**, yaitu `src/lib/checkout/index.ts`. Jalur settle kedua — sekecil apa pun niatnya — akan menggagalkan test itu.
@@ -137,11 +144,31 @@ async checkStatus(ref) {
 }
 ```
 
-### 3.3 Dua syarat kesiapan, dan kenapa keduanya wajib
+### 3.3 Satu syarat kesiapan
 
-`isConfigured()` benar hanya kalau **`qrisEnabled` nyala DAN `qrisImagePath` terisi**. Menyalakan QRIS tanpa gambar akan membuat kasir menekan tombol lalu menghadap kotak kosong sementara pelanggan menunggu — jadi `PATCH /api/settings` menolak `qrisEnabled: 'true'` selama gambarnya belum ada, dan halaman pengaturan mematikan tombol "Aktifkan QRIS" dengan keterangan alasannya.
+`isConfigured()` benar kalau **`qrisEnabled` nyala**. Titik.
 
-Urutan yang benar: unggah gambar → aktifkan. Ditegakkan server, bukan sekadar disarankan UI.
+Dulu ada syarat kedua — `qrisImagePath` harus terisi — dan syarat itu benar untuk alurnya: menyalakan QRIS tanpa gambar berarti kasir menekan tombol lalu menghadap kotak kosong sementara pelanggan menunggu. Syarat itu hilang bersama gambarnya. QR soundbox tertempel di meja dan tidak pernah ditampilkan di layar siapa pun, jadi tidak ada berkas yang bisa diunggah maupun diperiksa.
+
+Yang menggantikannya adalah kenyataan fisik: kalau kotaknya belum terpasang, pemiliknya tidak akan menyalakan QRIS.
+
+**Yang ikut dihapus, dan bukan sekadar disembunyikan:**
+
+| Dihapus | Kenapa |
+|---|---|
+| `src/components/kasir/qris-pending.tsx` | Modal QR + tombol konfirmasi/batal. Tidak pernah dirender lagi |
+| `src/app/api/settings/qris-image/route.ts` | Route unggah gambar. Selama ia hidup, ia tetap bisa dipanggil siapa pun di WiFi toko dan tetap menulis berkas ke disk untuk fitur yang sudah tidak ada |
+| Setting `qrisImagePath` | Beserta pemeriksaan silang di `PATCH /api/settings` |
+| Bagian unggah di halaman pengaturan | Diganti satu tombol nyala/mati |
+
+**Yang TIDAK dihapus, dan alasannya:**
+
+| Tetap ada | Kenapa |
+|---|---|
+| `POST /api/payments/:id/confirm` dan `/cancel` | Jalur resmi pelunasan. Provider dinamis nanti memanggilnya lewat webhook, dan baris `PENDING` lama di database toko masih butuh jalan keluar |
+| `settlesImmediately()` | Titik tempat provider dinamis menjawab `false`. Menghapusnya karena "semua true" berarti membongkar satu-satunya tempat perbedaan itu bisa dinyatakan |
+| Auto-cancel `PENDING` saat tutup shift | Mekanismenya tetap dijaga test (`tests/e2e-qris.test.ts` nomor 14). Layar kasir tidak lagi membuat baris `PENDING`, tapi webhook nanti akan |
+| Dashboard kewajiban manual | Void atas QRIS yang sudah `PAID` tetap menyisakan kewajiban mengembalikan uang, dan alur satu langkah justru membuatnya lebih sering — karena tidak ada lagi tahap batal sebelum lunas |
 
 ---
 

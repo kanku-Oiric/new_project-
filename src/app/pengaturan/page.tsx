@@ -90,10 +90,7 @@ export default async function PengaturanPage() {
           </p>
         </section>
 
-        <QrisSettings
-          enabled={raw.qrisEnabled === 'true'}
-          imageName={raw.qrisImagePath}
-        />
+        <QrisSettings enabled={raw.qrisEnabled === 'true'} />
 
         <NotifikasiSettings
           channels={notifChannels}

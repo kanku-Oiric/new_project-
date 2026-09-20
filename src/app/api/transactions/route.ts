@@ -3,7 +3,7 @@ import { clientIp, deviceLabel, ok, parseBody, route } from '@/lib/api'
 import { requireSession } from '@/lib/auth/session'
 import { ConflictError } from '@/lib/errors'
 import { checkout } from '@/lib/checkout'
-import { PaymentMethodSchema } from '@/lib/enums'
+import { PaymentMethodSchema, ServiceKindSchema } from '@/lib/enums'
 import { IdempotencyKeySchema } from '@/lib/idempotency'
 import { findOpenShift } from '@/lib/shift/service'
 
@@ -23,9 +23,33 @@ const LineSchema = z.object({
   itemDiscount: z.number().int().min(0).default(0),
 })
 
+/**
+ * Jasa pembayaran.
+ *
+ * Perhatikan yang TIDAK ada di sini juga: `direction` dan `label`. Keduanya
+ * datang dari katalog di server (`src/lib/service/catalog.ts`). Kalau arah uang
+ * boleh ditentukan client, siapa pun di WiFi toko bisa mengirim tarik tunai
+ * bertanda terbalik dan menguras laci lewat satu request.
+ */
+const ServiceLineSchema = z.object({
+  kind: ServiceKindSchema,
+  providerId: z.string().uuid(),
+  /** Titipan yang diteruskan ke provider. Selalu positif. */
+  passthroughAmount: z.number().int().min(1).max(2_147_483_647),
+  /** Biaya admin — pendapatan toko. Boleh nol, toko memang boleh tidak memungut. */
+  serviceFeeAmount: z.number().int().min(0).max(2_147_483_647),
+  /** Potongan provider ke toko, kalau ada. Masuk HPP. */
+  providerCostAmount: z.number().int().min(0).max(2_147_483_647).optional(),
+  customerRef: z.string().trim().max(60).optional(),
+  note: z.string().trim().max(200).optional(),
+})
+
 const CheckoutSchema = z
   .object({
-    lines: z.array(LineSchema).min(1, 'Keranjang kosong').max(200),
+    // Tidak lagi `.min(1)`: keranjang boleh berisi jasa saja. Yang dijaga adalah
+    // "tidak kosong sama sekali", lewat refine di bawah.
+    lines: z.array(LineSchema).max(200).default([]),
+    services: z.array(ServiceLineSchema).max(20).default([]),
     transactionDiscount: z.number().int().min(0).default(0),
     method: PaymentMethodSchema,
     amountTendered: z.number().int().min(0).optional(),
@@ -34,6 +58,10 @@ const CheckoutSchema = z
     // kali; tanpa kunci itu tercatat sebagai dua penjualan. Perlindungannya tidak
     // boleh bergantung pada kedisiplinan client (src/lib/idempotency.ts).
     idempotencyKey: IdempotencyKeySchema,
+  })
+  .refine((v) => v.lines.length > 0 || v.services.length > 0, {
+    message: 'Keranjang kosong',
+    path: ['lines'],
   })
   .refine((v) => v.method !== 'CASH' || v.amountTendered !== undefined, {
     message: 'Nominal uang yang diterima wajib diisi untuk pembayaran tunai',

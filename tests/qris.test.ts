@@ -179,8 +179,16 @@ describe('QRIS PENDING belum menyentuh stok', () => {
       const view = await readPaymentStatus(paymentId, prisma)
       expect(view.status).toBe('PENDING')
       expect(view.transactionStatus).toBe('PENDING')
-      expect(view.settlesOnCreate).toBe(false)
       expect(view.providerName).toBe('qris-static')
+      // `settlesOnCreate` sekarang true untuk QRIS soundbox: kasir menekan
+      // tombolnya SETELAH kotaknya berbunyi, jadi checkout langsung melunaskan.
+      //
+      // Yang diuji di berkas ini justru jalur PENDING-nya, dan jalur itu TETAP
+      // ADA: `createTransactionInTx` tidak pernah melunaskan apa pun sendiri —
+      // yang memutuskan adalah `checkout()`. Provider dinamis nanti (Midtrans/
+      // Xendit) memakai jalur yang sama persis lewat webhook, jadi seluruh
+      // pemeriksaan di bawah ini menjaga kode yang masih akan dipakai.
+      expect(view.settlesOnCreate).toBe(true)
     }
 
     const trx = await prisma.transaction.findUniqueOrThrow({ where: { id: transactionId } })

@@ -47,7 +47,12 @@ export async function getVoidInfo(
 ): Promise<TransactionVoidInfo> {
   const trx = await prisma.transaction.findUnique({
     where: { id: transactionId },
-    include: { shift: true, payments: true, refunds: { select: { id: true } } },
+    include: {
+      shift: true,
+      payments: true,
+      refunds: { select: { id: true } },
+      services: { select: { id: true } },
+    },
   })
   if (!trx) throw new NotFoundError('Transaksi tidak ditemukan')
 
@@ -56,6 +61,7 @@ export async function getVoidInfo(
     businessDate: trx.businessDate,
     shiftStatus: trx.shift.status as ShiftStatus,
     hasRefund: trx.refunds.length > 0,
+    hasService: trx.services.length > 0,
     today: toBusinessDate(now, config.timezone),
   })
 
@@ -94,7 +100,13 @@ export async function voidTransaction(
   return prisma.$transaction(async (tx) => {
     const trx = await tx.transaction.findUnique({
       where: { id: transactionId },
-      include: { items: true, payments: true, shift: true, refunds: { select: { id: true } } },
+      include: {
+        items: true,
+        payments: true,
+        shift: true,
+        refunds: { select: { id: true } },
+        services: { select: { id: true } },
+      },
     })
     if (!trx) throw new NotFoundError('Transaksi tidak ditemukan')
 
@@ -103,6 +115,7 @@ export async function voidTransaction(
       businessDate: trx.businessDate,
       shiftStatus: trx.shift.status as ShiftStatus,
       hasRefund: trx.refunds.length > 0,
+      hasService: trx.services.length > 0,
       today: toBusinessDate(now, config.timezone),
     })
     if (!eligibility.canVoid) {

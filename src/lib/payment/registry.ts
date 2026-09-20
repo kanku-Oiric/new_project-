@@ -5,6 +5,7 @@ import { NotFoundError } from '../errors'
 import { getSetting, type SettingKey } from '../settings'
 import type { PaymentProvider, ProviderDeps } from './provider'
 import { createCashProvider } from './providers/cash'
+import { createCashOutProvider } from './providers/cash-out'
 import { createStaticQrisProvider } from './providers/qris-static'
 
 /**
@@ -43,6 +44,7 @@ export function providersFor(db: Db = prisma): Record<PaymentMethod, PaymentProv
   return {
     CASH: createCashProvider(deps),
     QRIS_STATIC: createStaticQrisProvider(deps),
+    CASH_OUT: createCashOutProvider(deps),
   }
 }
 

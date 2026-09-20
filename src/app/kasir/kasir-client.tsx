@@ -2,13 +2,23 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getJson, outcomeMessage, postJson } from '@/lib/api-client'
-import { computeCartDisplay, type CartDisplayTotals } from '@/lib/cart'
-import type { PaymentMethod } from '@/lib/enums'
+import {
+  computeCartWithServices,
+  type CartServiceTotals,
+} from '@/lib/cart/services'
+import type { PaymentMethod, ServiceKind } from '@/lib/enums'
+import { feeDefaults } from '@/lib/service/catalog'
 import { CartPanel } from '@/components/kasir/cart-panel'
 import { PaymentDialog } from '@/components/kasir/payment-dialog'
 import { ProductPanel } from '@/components/kasir/product-panel'
-import { QrisPending } from '@/components/kasir/qris-pending'
-import type { CartItem, KasirProduct } from '@/components/kasir/types'
+import { ServiceDialog } from '@/components/kasir/service-dialog'
+import { ServiceRail } from '@/components/kasir/service-rail'
+import type {
+  CartItem,
+  CartServiceItem,
+  KasirProduct,
+  KasirProvider,
+} from '@/components/kasir/types'
 import { Nav } from '@/components/ui/nav'
 import type { Role } from '@/lib/enums'
 import { useIdempotencyKey } from '@/lib/use-idempotency-key'
@@ -18,17 +28,17 @@ interface CheckoutResponse {
   trxNumber: string
   paymentId: string
   status: string
+  /** OMZET. Untuk transaksi jasa ini JAUH lebih kecil daripada uang yang berpindah. */
   netTotal: number
+  passthroughTotal: number
+  /** Uang yang benar-benar berpindah — yang diucapkan kasir ke pelanggan. */
+  payAmount: number
+  payDirection: 'IN' | 'OUT'
+  providerBalances: { providerId: string; providerName: string; balanceAfter: number }[]
   changeAmount: number | null
   negativeStock: { productName: string; stockAfter: number }[]
   /** `true` = transaksi ini sudah tersimpan sebelumnya; ini bukan penjualan baru. */
   replayed?: boolean
-}
-
-interface ConfirmResponse {
-  transactionId: string
-  trxNumber: string
-  negativeStock: { productName: string; stockAfter: number }[]
 }
 
 interface LastSale {
@@ -36,6 +46,8 @@ interface LastSale {
   transactionId: string
   changeAmount: number | null
   negativeStock: { productName: string; stockAfter: number }[]
+  /** Saldo provider setelah transaksi ini — supaya kasir langsung tahu sisanya. */
+  providerBalances?: { providerName: string; balanceAfter: number }[]
   /**
    * Penjualan ini sudah tersimpan pada percobaan sebelumnya. Kasir harus tahu,
    * supaya ia tidak menyangka baru saja terjadi penjualan kedua dan lalu
@@ -44,33 +56,31 @@ interface LastSale {
   replayed?: boolean
 }
 
-/** Transaksi QRIS yang sudah dibuat dan menunggu konfirmasi kasir. */
-interface PendingQris {
-  paymentId: string
-  transactionId: string
-  trxNumber: string
-  amount: number
-}
-
 export function KasirClient({
   initialProducts,
   initialKategori,
+  initialProviders,
+  serviceFees,
   cashierName,
   role,
   qris,
-  qrisImageUrl,
 }: {
   initialProducts: KasirProduct[]
   initialKategori: string[]
+  initialProviders: KasirProvider[]
+  /** Biaya admin bawaan per jenis jasa, sudah ditimpa setting pemilik. */
+  serviceFees: Record<string, number>
   cashierName: string
   role: Role
   qris: { configured: boolean; label: string; hint: string | null }
-  qrisImageUrl: string | null
 }) {
   const [products, setProducts] = useState(initialProducts)
   const [kategoriList] = useState(initialKategori)
   const [loading, setLoading] = useState(false)
   const [items, setItems] = useState<CartItem[]>([])
+  const [services, setServices] = useState<CartServiceItem[]>([])
+  const [providers, setProviders] = useState(initialProviders)
+  const [serviceKind, setServiceKind] = useState<ServiceKind | null>(null)
   const [transactionDiscount, setTransactionDiscount] = useState(0)
   const [paying, setPaying] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -80,12 +90,15 @@ export function KasirClient({
   // Kunci sekali-pakai per isi keranjang: menekan Bayar dua kali karena jawaban
   // server tidak sampai tidak lagi bisa mencatat dua penjualan.
   const keyFor = useIdempotencyKey()
-  const [pendingQris, setPendingQris] = useState<PendingQris | null>(null)
-  const [qrisStatus, setQrisStatus] = useState<string | null>(null)
 
   // Setiap pencarian membatalkan hasil pencarian sebelumnya, supaya respons
   // yang datang terlambat tidak menimpa hasil yang lebih baru.
   const searchSeq = useRef(0)
+
+  // Penomoran baris jasa. Bukan UUID: crypto.randomUUID undefined di HP kasir
+  // yang membuka lewat IP LAN (src/lib/idempotency.ts), dan yang dibutuhkan di
+  // sini cuma pembeda antar-baris di dalam satu keranjang.
+  const serviceSeq = useRef(0)
 
   const search = useCallback(async (query: string, kategori: string | null) => {
     const seq = ++searchSeq.current
@@ -162,8 +175,27 @@ export function KasirClient({
     )
   }, [])
 
+  const addService = useCallback((line: Omit<CartServiceItem, 'lineId'>) => {
+    serviceSeq.current += 1
+    setServices((prev) => [...prev, { ...line, lineId: `jasa-${serviceSeq.current}` }])
+    setServiceKind(null)
+    setBanner(null)
+    setLastSale(null)
+  }, [])
+
+  const removeService = useCallback((lineId: string) => {
+    setServices((prev) => prev.filter((j) => j.lineId !== lineId))
+  }, [])
+
+  /** Muat ulang saldo provider — dipanggil setelah transaksi jasa selesai. */
+  const refreshProviders = useCallback(async () => {
+    const outcome = await getJson<{ providers: KasirProvider[] }>('/api/providers')
+    if (outcome.kind === 'ok') setProviders(outcome.data.providers)
+  }, [])
+
   const clearCart = useCallback(() => {
     setItems([])
+    setServices([])
     setTransactionDiscount(0)
     setPayError(null)
   }, [])
@@ -172,13 +204,13 @@ export function KasirClient({
   // batas, computeCartDisplay melempar — ditangkap di sini dan ditampilkan
   // sebagai pesan, bukan membuat layar kasir putih.
   const { totals, cartError } = useMemo((): {
-    totals: CartDisplayTotals | null
+    totals: CartServiceTotals | null
     cartError: string | null
   } => {
-    if (items.length === 0) return { totals: null, cartError: null }
+    if (items.length === 0 && services.length === 0) return { totals: null, cartError: null }
     try {
       return {
-        totals: computeCartDisplay(
+        totals: computeCartWithServices(
           items.map((i) => ({
             productId: i.productId,
             productName: i.nama,
@@ -187,6 +219,17 @@ export function KasirClient({
             qty: i.qty,
             itemDiscount: i.itemDiscount,
           })),
+          services.map((j) => ({
+            kind: j.kind,
+            direction: j.direction,
+            label: j.label,
+            providerId: j.providerId,
+            providerName: j.providerName,
+            passthroughAmount: j.passthroughAmount,
+            serviceFeeAmount: j.serviceFeeAmount,
+            providerCostAmount: j.providerCostAmount,
+            customerRef: j.customerRef,
+          })),
           transactionDiscount,
         ),
         cartError: null,
@@ -194,17 +237,16 @@ export function KasirClient({
     } catch (e) {
       return { totals: null, cartError: e instanceof Error ? e.message : 'Keranjang tidak valid' }
     }
-  }, [items, transactionDiscount])
+  }, [items, services, transactionDiscount])
 
   /** Selesai: tampilkan struk, kosongkan keranjang, segarkan stok. */
   const finishSale = useCallback(
     (sale: LastSale) => {
       setLastSale(sale)
       setItems([])
+      setServices([])
       setTransactionDiscount(0)
       setPaying(false)
-      setPendingQris(null)
-      setQrisStatus(null)
       setBusy(false)
       void search('', null)
     },
@@ -222,6 +264,16 @@ export function KasirClient({
           productId: i.productId,
           qty: i.qty,
           itemDiscount: i.itemDiscount,
+        })),
+        // `direction` dan `label` sengaja TIDAK dikirim: keduanya ditentukan
+        // katalog di server. Client tidak boleh menentukan arah uang.
+        services: services.map((j) => ({
+          kind: j.kind,
+          providerId: j.providerId,
+          passthroughAmount: j.passthroughAmount,
+          serviceFeeAmount: j.serviceFeeAmount,
+          ...(j.providerCostAmount > 0 ? { providerCostAmount: j.providerCostAmount } : {}),
+          ...(j.customerRef ? { customerRef: j.customerRef } : {}),
         })),
         transactionDiscount,
         method,
@@ -266,18 +318,19 @@ export function KasirClient({
 
       const result = outcome.data
 
-      // QRIS berhenti di PENDING. Stok BELUM berkurang dan tidak akan berkurang
-      // sampai kasir mengonfirmasi (docs/qris.md §3.1).
-      if (result.status === 'PENDING') {
-        setPendingQris({
-          paymentId: result.paymentId,
-          transactionId: result.transactionId,
-          trxNumber: result.trxNumber,
-          amount: result.netTotal,
-        })
-        setQrisStatus(null)
-        setBusy(false)
-        return
+      // Tidak ada lagi cabang PENDING di sini.
+      //
+      // Dengan QRIS soundbox, kasir menekan tombol QRIS SETELAH kotaknya
+      // berbunyi — uangnya sudah masuk, jadi transaksinya langsung COMPLETED
+      // lewat settleTransaction yang sama seperti tunai (docs/qris.md §3).
+      //
+      // Cabang PENDING-nya sendiri masih ada di server untuk provider dinamis
+      // nanti; yang hilang cuma langkah kedua yang dulu harus ditekan manusia.
+
+      if (result.providerBalances && result.providerBalances.length > 0) {
+        // Saldo di rail ikut diperbarui, supaya kasir tidak menjual jasa
+        // berikutnya berdasarkan angka yang sudah basi.
+        void refreshProviders()
       }
 
       finishSale({
@@ -285,77 +338,19 @@ export function KasirClient({
         transactionId: result.transactionId,
         changeAmount: result.changeAmount,
         negativeStock: result.negativeStock ?? [],
+        providerBalances: result.providerBalances,
         replayed: result.replayed === true,
       })
     },
-    [items, totals, transactionDiscount, finishSale, keyFor],
+    [items, services, totals, transactionDiscount, finishSale, keyFor, refreshProviders],
   )
 
-  /**
-   * Konfirmasi pembayaran QRIS.
-   *
-   * Dipanggil HANYA dari tombol. Tidak ada efek, timer, atau interval di file
-   * ini yang bisa memanggilnya sendiri.
-   */
-  const confirmQris = useCallback(async () => {
-    if (!pendingQris) return
-    setBusy(true)
-    setPayError(null)
-
-    const outcome = await postJson<ConfirmResponse>(
-      `/api/payments/${pendingQris.paymentId}/confirm`,
-      {},
-    )
-
-    if (outcome.kind !== 'ok') {
-      setPayError(outcomeMessage(outcome, true))
-      setBusy(false)
-      return
-    }
-
-    finishSale({
-      trxNumber: outcome.data.trxNumber,
-      transactionId: outcome.data.transactionId,
-      changeAmount: null,
-      negativeStock: outcome.data.negativeStock ?? [],
-    })
-  }, [pendingQris, finishSale])
-
-  /** Batalkan QRIS. Keranjang DIBIARKAN utuh supaya bisa lanjut ke tunai. */
-  const cancelQris = useCallback(async () => {
-    if (!pendingQris) return
-    setBusy(true)
-    setPayError(null)
-
-    const outcome = await postJson(`/api/payments/${pendingQris.paymentId}/cancel`, {
-      reason: 'Dibatalkan kasir di layar pembayaran',
-    })
-
-    setBusy(false)
-    if (outcome.kind !== 'ok') {
-      setPayError(outcomeMessage(outcome, true))
-      return
-    }
-
-    setPendingQris(null)
-    setQrisStatus(null)
-    setBanner(
-      `${pendingQris.trxNumber} dibatalkan. Keranjang masih utuh — bisa dilanjutkan dengan tunai.`,
-    )
-  }, [pendingQris])
-
-  /** Baca status tersimpan. Tidak mengubah apa pun, di sisi mana pun. */
-  const refreshQrisStatus = useCallback(async () => {
-    if (!pendingQris) return
-    const outcome = await getJson<{ status: string; transactionStatus: string }>(
-      `/api/payments/${pendingQris.paymentId}/status`,
-    )
-    if (outcome.kind !== 'ok') {
-      setPayError(outcomeMessage(outcome, false))
-      return
-    }
-    setQrisStatus(outcome.data.status)
-  }, [pendingQris])
+  // Dulu di sini ada confirmQris, cancelQris, dan refreshQrisStatus — tiga
+  // fungsi untuk langkah kedua yang sekarang tidak ada.
+  //
+  // Endpoint-nya TIDAK ikut dihapus: /api/payments/:id/confirm dan /cancel
+  // adalah jalur resmi pelunasan yang akan dipakai provider dinamis nanti lewat
+  // webhook, dan keduanya masih dijaga state machine yang sama.
 
   // Muat ulang daftar produk setelah penjualan supaya angka stok ikut segar.
   useEffect(() => {
@@ -406,21 +401,38 @@ export function KasirClient({
       )}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[3fr_2fr]">
-        <ProductPanel
-          products={products}
-          kategoriList={kategoriList}
-          loading={loading}
-          onSearch={search}
-          onScan={handleScan}
-          onPick={addToCart}
-        />
+        {/* Kolom kiri dibagi dua: grid produk dan rail jasa, dipisahkan garis.
+            Di layar sempit rail-nya pindah ke ATAS daftar produk — tetap
+            terlihat, tetap satu ketukan, tidak bersembunyi di balik tab. */}
+        <div className="flex min-h-0 flex-col-reverse gap-3 lg:flex-row">
+          <div className="min-h-0 flex-1">
+            <ProductPanel
+              products={products}
+              kategoriList={kategoriList}
+              loading={loading}
+              onSearch={search}
+              onScan={handleScan}
+              onPick={addToCart}
+            />
+          </div>
+          <ServiceRail
+            providers={providers}
+            disabled={busy}
+            onPick={(kind) => {
+              setServiceKind(kind)
+              setPayError(null)
+            }}
+          />
+        </div>
         <CartPanel
           items={items}
+          services={services}
           totals={totals}
           error={cartError}
           transactionDiscount={transactionDiscount}
           onQty={setQty}
           onRemove={removeItem}
+          onRemoveService={removeService}
           onItemDiscount={setItemDiscount}
           onTransactionDiscount={setTransactionDiscount}
           onClear={clearCart}
@@ -431,28 +443,28 @@ export function KasirClient({
         />
       </div>
 
-      {paying && totals && !pendingQris && (
+      {serviceKind && (
+        <ServiceDialog
+          kind={serviceKind}
+          providers={providers}
+          defaultFee={feeDefaults(serviceFees)[serviceKind]}
+          onCancel={() => setServiceKind(null)}
+          onAdd={addService}
+        />
+      )}
+
+      {paying && totals && (
         <PaymentDialog
-          amount={totals.netTotal}
+          // Yang harus ditutup uang pelanggan adalah uang yang BERPINDAH, bukan
+          // omzet. Memakai netTotal di sini berarti kasir menerima Rp 2.500
+          // untuk token Rp 100.000, dan kembaliannya dihitung dari angka salah.
+          amount={totals.payAmount}
+          payDirection={totals.payDirection}
           busy={busy}
           error={payError}
           qris={qris}
           onCancel={() => setPaying(false)}
           onPay={pay}
-        />
-      )}
-
-      {pendingQris && (
-        <QrisPending
-          trxNumber={pendingQris.trxNumber}
-          amount={pendingQris.amount}
-          qrImageUrl={qrisImageUrl}
-          storedStatus={qrisStatus}
-          busy={busy}
-          error={payError}
-          onConfirm={confirmQris}
-          onCancel={cancelQris}
-          onRefreshStatus={refreshQrisStatus}
         />
       )}
     </div>

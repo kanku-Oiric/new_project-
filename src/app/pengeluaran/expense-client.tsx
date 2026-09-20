@@ -26,7 +26,7 @@ export function ExpenseClient({
   kategoriList: string[]
 }) {
   const [expenses, setExpenses] = useState(initialExpenses)
-  const [kategori, setKategori] = useState(kategoriList[0] ?? 'Lain-lain')
+  const [kategori, setKategori] = useState(kategoriList[0] ?? 'Lainnya')
   const [text, setText] = useState('')
   const [note, setNote] = useState('')
   const [paidFrom, setPaidFrom] = useState<'CASH_DRAWER' | 'OTHER'>('CASH_DRAWER')
@@ -57,6 +57,12 @@ export function ExpenseClient({
     .filter((e) => e.paidFrom === 'CASH_DRAWER')
     .reduce((s, e) => s + e.amount, 0)
 
+  // Kategori yang PERNAH dipakai di shift ini ikut muncul sebagai saran, walau
+  // tidak ada di daftar bawaan. Kategori yang diketik sekali lalu hilang dari
+  // saran akan diketik ulang dengan ejaan berbeda besok — dan laporan per
+  // kategori langsung pecah menjadi dua baris yang maksudnya sama.
+  const kategoriTerpakai = [...new Set(expenses.map((e) => e.kategori))]
+
   if (!hasOpenShift) {
     return (
       <div className="rounded-xl border border-kasir-border bg-kasir-surface p-4">
@@ -79,20 +85,12 @@ export function ExpenseClient({
       <section className="rounded-xl border border-kasir-border bg-kasir-surface p-4">
         <h2 className="text-base font-semibold text-kasir-text">Catat pengeluaran</h2>
 
-        <label className="mt-3 block">
-          <span className="mb-1 block text-xs text-kasir-muted">Kategori</span>
-          <select
-            value={kategori}
-            onChange={(e) => setKategori(e.target.value)}
-            className="w-full rounded-lg border border-kasir-border bg-kasir-surface px-3 text-base"
-          >
-            {kategoriList.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-        </label>
+        <KategoriField
+          value={kategori}
+          pilihan={kategoriList}
+          terpakai={kategoriTerpakai}
+          onChange={setKategori}
+        />
 
         <label className="mt-3 block">
           <span className="mb-1 block text-xs text-kasir-muted">Nominal</span>
@@ -146,12 +144,12 @@ export function ExpenseClient({
 
         <button
           type="button"
-          disabled={busy || amount < 1}
+          disabled={busy || amount < 1 || kategori.trim() === ''}
           onClick={async () => {
             setBusy(true)
             setError(null)
             const payload = {
-              kategori,
+              kategori: kategori.trim(),
               amount,
               note: note.trim() || undefined,
               paidFrom,
@@ -286,5 +284,69 @@ function SourceButton({
     >
       {label}
     </button>
+  )
+}
+
+/**
+ * Kategori pengeluaran: bisa diketik, dicari, dan dibuat sendiri.
+ *
+ * `<input list=...>` dengan `<datalist>`, bukan `<select>`, dan bukan pula
+ * pustaka combobox. Alasannya bukan kesederhanaan kode:
+ *
+ *  - Mengetik langsung menyaring daftar, jadi "Lis" cukup untuk sampai ke
+ *    "Listrik" tanpa menggulir — di HP, menggulir <select> berisi sepuluh
+ *    kategori dengan satu tangan sambil memegang uang itu menyebalkan.
+ *  - Kategori baru cukup diketik. Tidak ada tombol "tambah kategori", tidak ada
+ *    layar pengaturan yang harus dibuka lebih dulu, dan kasir tidak perlu
+ *    menunggu pemilik untuk mencatat pengeluaran yang sudah terjadi.
+ *  - Keyboard virtualnya tetap keyboard biasa, dan daftar sarannya dirender
+ *    browser — tidak ada masalah fokus atau scroll yang biasa muncul pada
+ *    combobox buatan sendiri di WebView Android.
+ *
+ * Yang tersimpan adalah teks apa adanya, jadi penyaringannya cuma bantuan
+ * pengetikan; server tetap menerima string bebas maksimal 60 karakter.
+ */
+function KategoriField({
+  value,
+  pilihan,
+  terpakai,
+  onChange,
+}: {
+  value: string
+  pilihan: string[]
+  terpakai: string[]
+  onChange: (v: string) => void
+}) {
+  const semua = [...new Set([...pilihan, ...terpakai])]
+  const baru = value.trim() !== '' && !semua.some((k) => k.toLowerCase() === value.trim().toLowerCase())
+
+  return (
+    <label className="mt-3 block">
+      <span className="mb-1 block text-xs text-kasir-muted">
+        Kategori — ketik untuk mencari, atau tulis kategori baru
+      </span>
+      <input
+        type="text"
+        list="kategori-pengeluaran"
+        value={value}
+        maxLength={60}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-lg border border-kasir-border bg-kasir-surface px-3 text-base"
+      />
+      <datalist id="kategori-pengeluaran">
+        {semua.map((k) => (
+          <option key={k} value={k} />
+        ))}
+      </datalist>
+      {baru && (
+        // Bukan peringatan, hanya pemberitahuan. Kategori baru memang boleh
+        // dibuat — yang tidak boleh adalah membuatnya tanpa sadar karena salah
+        // ketik, lalu laporan per kategori pecah menjadi "Transport" dan
+        // "Transpor".
+        <span className="mt-1 block text-xs text-kasir-muted">
+          Kategori baru &ldquo;{value.trim()}&rdquo; akan dipakai.
+        </span>
+      )}
+    </label>
   )
 }

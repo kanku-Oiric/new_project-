@@ -2,8 +2,8 @@
 
 import { useState } from 'react'
 import { formatRupiah, parseRupiah } from '@/lib/money'
-import type { CartDisplayTotals } from '@/lib/cart'
-import type { CartItem } from './types'
+import type { CartServiceTotals } from '@/lib/cart/services'
+import type { CartItem, CartServiceItem } from './types'
 
 /**
  * Kolom kanan: keranjang.
@@ -15,34 +15,41 @@ import type { CartItem } from './types'
  */
 export function CartPanel({
   items,
+  services,
   totals,
   error,
   transactionDiscount,
   onQty,
   onRemove,
+  onRemoveService,
   onItemDiscount,
   onTransactionDiscount,
   onClear,
   onPay,
 }: {
   items: CartItem[]
-  totals: CartDisplayTotals | null
+  services: CartServiceItem[]
+  totals: CartServiceTotals | null
   error: string | null
   transactionDiscount: number
   onQty: (productId: string, qty: number) => void
   onRemove: (productId: string) => void
+  onRemoveService: (lineId: string) => void
   onItemDiscount: (productId: string, value: number) => void
   onTransactionDiscount: (value: number) => void
   onClear: () => void
   onPay: () => void
 }) {
+  const jumlahBaris = items.length + services.length
+  const keluar = totals?.payDirection === 'OUT'
+
   return (
     <section className="flex min-h-0 flex-col rounded-xl border border-kasir-border bg-kasir-surface">
       <header className="flex items-center justify-between border-b border-kasir-border px-4 py-3">
         <h2 className="text-sm font-medium text-kasir-text">
-          Keranjang{items.length > 0 ? ` · ${items.length} item` : ''}
+          Keranjang{jumlahBaris > 0 ? ` · ${jumlahBaris} baris` : ''}
         </h2>
-        {items.length > 0 && (
+        {jumlahBaris > 0 && (
           <button type="button" onClick={onClear} className="px-2 text-sm text-kasir-danger">
             Kosongkan
           </button>
@@ -50,10 +57,10 @@ export function CartPanel({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {items.length === 0 ? (
+        {jumlahBaris === 0 ? (
           <p className="p-6 text-center text-sm text-kasir-muted">
             {/* Tanpa menyebut arah: di HP daftar produk ada di atas, bukan di kiri. */}
-            Scan barcode atau pilih produk untuk mulai.
+            Scan barcode, pilih produk, atau pilih jasa pembayaran untuk mulai.
           </p>
         ) : (
           <ul className="divide-y divide-kasir-border">
@@ -62,24 +69,35 @@ export function CartPanel({
                 key={item.productId}
                 item={item}
                 lineFinal={
-                  totals?.lines.find((l) => l.productId === item.productId)?.lineFinal ?? null
+                  totals?.goods?.lines.find((l) => l.productId === item.productId)?.lineFinal ??
+                  null
                 }
                 onQty={onQty}
                 onRemove={onRemove}
                 onItemDiscount={onItemDiscount}
               />
             ))}
+            {services.map((jasa) => (
+              <ServiceRow key={jasa.lineId} jasa={jasa} onRemove={onRemoveService} />
+            ))}
           </ul>
         )}
       </div>
 
-      {items.length > 0 && (
+      {jumlahBaris > 0 && (
         <footer className="border-t border-kasir-border p-4">
-          <DiscountField
-            label="Diskon transaksi"
-            value={transactionDiscount}
-            onChange={onTransactionDiscount}
-          />
+          {items.length > 0 && (
+            // Diskon transaksi dialokasikan atas barang saja. Menurunkan titipan
+            // mustahil — provider tetap dibayar penuh — dan diskon atas biaya
+            // admin lebih jujur dengan mengisi biaya adminnya lebih kecil. Karena
+            // itu kolomnya tidak ditampilkan untuk keranjang berisi jasa saja,
+            // bukan ditampilkan lalu ditolak server.
+            <DiscountField
+              label="Diskon transaksi"
+              value={transactionDiscount}
+              onChange={onTransactionDiscount}
+            />
+          )}
 
           {error ? (
             <p role="alert" className="my-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-kasir-danger">
@@ -101,28 +119,97 @@ export function CartPanel({
                     value={`−${formatRupiah(totals.transactionDiscount, { bare: true })}`}
                   />
                 )}
+                {totals.passthroughTotal !== 0 && (
+                  <Row
+                    label="Titipan jasa (bukan omzet)"
+                    value={formatRupiah(totals.passthroughTotal)}
+                  />
+                )}
               </dl>
             )
           )}
 
-          <div className="mb-3 flex items-baseline justify-between border-t border-kasir-border pt-3">
-            <span className="text-sm text-kasir-muted">Total</span>
-            <span className="text-2xl font-semibold text-kasir-text">
-              {formatRupiah(totals?.netTotal ?? 0)}
-            </span>
+          <div className="mb-3 border-t border-kasir-border pt-3">
+            <div className="flex items-baseline justify-between">
+              <span className="text-sm text-kasir-muted">
+                {/* Kalimatnya berubah saat uang justru KELUAR dari laci. Kasir
+                    yang membaca "Total" lalu menerima uang dari pelanggan pada
+                    transaksi tarik tunai akan membuat kesalahan dua arah
+                    sekaligus. */}
+                {keluar ? 'Serahkan ke pelanggan' : 'Total'}
+              </span>
+              <span
+                className={`text-2xl font-semibold ${keluar ? 'text-kasir-warning' : 'text-kasir-text'}`}
+              >
+                {formatRupiah(totals?.payAmount ?? 0)}
+              </span>
+            </div>
+            {totals && totals.serviceFeeTotal > 0 && (
+              <p className="mt-1 text-right text-xs text-kasir-muted">
+                Omzet toko dari transaksi ini {formatRupiah(totals.netTotal)}
+              </p>
+            )}
           </div>
 
           <button
             type="button"
             onClick={onPay}
             disabled={!totals || error !== null}
-            className="h-14 w-full rounded-xl bg-kasir-accent text-lg font-medium text-white disabled:opacity-40"
+            className={`h-14 w-full rounded-xl text-lg font-medium text-white disabled:opacity-40 ${
+              keluar ? 'bg-kasir-warning' : 'bg-kasir-accent'
+            }`}
           >
-            Bayar
+            {keluar ? 'Serahkan uang' : 'Bayar'}
           </button>
         </footer>
       )}
     </section>
+  )
+}
+
+function ServiceRow({
+  jasa,
+  onRemove,
+}: {
+  jasa: CartServiceItem
+  onRemove: (lineId: string) => void
+}) {
+  const masuk = jasa.direction === 'PROVIDER_IN'
+
+  return (
+    <li className="p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-kasir-text">
+            {jasa.label}
+            <span className="ml-2 rounded bg-kasir-bg px-1.5 py-0.5 text-[11px] text-kasir-muted">
+              {jasa.providerName}
+            </span>
+          </p>
+          <p className="text-xs text-kasir-muted">
+            {masuk ? 'Terima transfer' : 'Titipan'} {formatRupiah(jasa.passthroughAmount)} · admin{' '}
+            {formatRupiah(jasa.serviceFeeAmount)}
+          </p>
+          {jasa.customerRef && (
+            <p className="truncate text-xs text-kasir-muted">No. {jasa.customerRef}</p>
+          )}
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-sm text-kasir-text">
+            {masuk
+              ? `−${formatRupiah(jasa.passthroughAmount - jasa.serviceFeeAmount, { bare: true })}`
+              : formatRupiah(jasa.passthroughAmount + jasa.serviceFeeAmount)}
+          </p>
+          <button
+            type="button"
+            onClick={() => onRemove(jasa.lineId)}
+            className="mt-1 text-xs text-kasir-danger"
+          >
+            Hapus
+          </button>
+        </div>
+      </div>
+    </li>
   )
 }
 

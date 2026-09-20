@@ -58,7 +58,16 @@ export const SALES_COUNTED_STATUSES = ['COMPLETED'] as const
 
 // ─────────────────────────────── PEMBAYARAN ───────────────────────────────
 
-export const PAYMENT_METHODS = ['CASH', 'QRIS_STATIC'] as const
+/**
+ * `CASH_OUT` bukan cara membayar — ia cara toko MENYERAHKAN uang, dipakai
+ * transaksi tarik tunai yang nilainya negatif bagi laci. Ia berdiri di daftar
+ * yang sama supaya satu transaksi tetap punya tepat satu baris pembayaran dan
+ * state machine yang sama; yang membedakannya hanya arah uangnya.
+ *
+ * `Payment.amount` untuk CASH_OUT tetap POSITIF (= uang yang diserahkan).
+ * Menyimpannya negatif akan menabrak assertRupiah di modul kas.
+ */
+export const PAYMENT_METHODS = ['CASH', 'QRIS_STATIC', 'CASH_OUT'] as const
 export const PaymentMethodSchema = z.enum(PAYMENT_METHODS)
 export type PaymentMethod = z.infer<typeof PaymentMethodSchema>
 
@@ -78,6 +87,50 @@ export type RefundMethod = z.infer<typeof RefundMethodSchema>
 export const EXPENSE_SOURCES = ['CASH_DRAWER', 'OTHER'] as const
 export const ExpenseSourceSchema = z.enum(EXPENSE_SOURCES)
 export type ExpenseSource = z.infer<typeof ExpenseSourceSchema>
+
+// ─────────────────────────────── JASA PEMBAYARAN ───────────────────────────────
+
+export const SERVICE_KINDS = [
+  'TOKEN_LISTRIK',
+  'PLN_PASCABAYAR',
+  'PDAM',
+  'EWALLET_TOPUP',
+  'TRANSFER_BANK',
+  'TARIK_TUNAI',
+] as const
+export const ServiceKindSchema = z.enum(SERVICE_KINDS)
+export type ServiceKind = z.infer<typeof ServiceKindSchema>
+
+/**
+ * Arah uang, dan ini yang membedakan tarik tunai dari lima jasa lainnya.
+ *
+ * PROVIDER_OUT  pelanggan menyerahkan uang, saldo provider BERKURANG
+ *               (token listrik, PLN, PDAM, top-up e-wallet, transfer bank)
+ * PROVIDER_IN   pelanggan transfer ke rekening toko, saldo provider BERTAMBAH,
+ *               dan toko menyerahkan uang tunai (tarik tunai)
+ */
+export const SERVICE_DIRECTIONS = ['PROVIDER_OUT', 'PROVIDER_IN'] as const
+export const ServiceDirectionSchema = z.enum(SERVICE_DIRECTIONS)
+export type ServiceDirection = z.infer<typeof ServiceDirectionSchema>
+
+export const PROVIDER_KINDS = ['EWALLET', 'BANK', 'PPOB'] as const
+export const ProviderKindSchema = z.enum(PROVIDER_KINDS)
+export type ProviderKind = z.infer<typeof ProviderKindSchema>
+
+export const PROVIDER_MOVEMENT_REASONS = [
+  'INITIAL',
+  'TOPUP',
+  'SERVICE',
+  'SERVICE_FAILED',
+  'ADJUSTMENT',
+] as const
+export const ProviderMovementReasonSchema = z.enum(PROVIDER_MOVEMENT_REASONS)
+export type ProviderMovementReason = z.infer<typeof ProviderMovementReasonSchema>
+
+/** Alasan yang boleh dipilih manusia lewat halaman saldo. */
+export const MANUAL_PROVIDER_REASONS = ['TOPUP', 'ADJUSTMENT'] as const
+export const ManualProviderReasonSchema = z.enum(MANUAL_PROVIDER_REASONS)
+export type ManualProviderReason = z.infer<typeof ManualProviderReasonSchema>
 
 // ─────────────────────────────── LAPORAN ───────────────────────────────
 
@@ -117,6 +170,11 @@ export const AUDIT_ACTIONS = [
   'PRODUCT_UPDATE',
   'STOCK_ADJUSTMENT',
   'EXPENSE_DELETE',
+  'PROVIDER_CREATE',
+  'PROVIDER_UPDATE',
+  'PROVIDER_TOPUP',
+  'PROVIDER_ADJUSTMENT',
+  'PRODUCT_DELETE',
   'SETTING_CHANGE',
   'USER_CREATE',
   'USER_UPDATE',

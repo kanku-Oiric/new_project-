@@ -159,9 +159,11 @@ Penjualan yang terjadi **setelah** waktu backup itu memang hilang dan tidak bisa
 Disebutkan di sini supaya tidak ada yang menunggu hal yang tidak akan datang:
 
 - **WiFi mati = kasir berhenti.** Tidak ada mode offline. Kalau WiFi atau laptopnya mati, catat penjualan di kertas lalu masukkan setelah sistem hidup lagi. (Ini keputusan sadar, bukan kelalaian — alasannya di `docs/architecture.md` §1.)
-- **QRIS tidak otomatis.** Sistem menampilkan gambar QR toko; kasir melihat notifikasi masuk di HP-nya sendiri, lalu menekan "Pembayaran diterima". Tidak ada sambungan ke bank.
+- **QRIS tidak otomatis.** QR-nya tertempel di meja dan soundbox yang berbunyi saat uang masuk. Kasir menekan tombol QRIS **setelah** mendengar bunyinya, dan transaksi langsung tercatat lunas. Sistem ini tidak mendengar bunyinya dan tidak tersambung ke bank — yang memastikan uangnya masuk tetap telinga kasir.
 - **Uang QRIS tidak bisa ditarik kembali.** Kalau transaksi QRIS yang sudah dibayar di-void, pengembalian ke pelanggan dilakukan manual. Dashboard mencatat kewajiban itu supaya tidak terlupa.
-- **Tidak ada laporan pajak, kasbon, atau data pelanggan.**
+- **Jasa pembayaran hanya DICATAT, tidak diproses.** Token listrik, PLN, PDAM, top-up e-wallet, transfer, dan tarik tunai dibayar kasir lewat aplikasi lain (Shopee/GoPay) di HP-nya. Sistem ini tidak memanggil bank maupun provider mana pun, jadi ia tidak pernah tahu apakah tokennya benar-benar terbit.
+- **Saldo provider tidak bisa dibaca otomatis.** Angka saldo di halaman Saldo adalah hasil hitungan sistem, bukan bacaan dari aplikasi Shopee. Cocokkan sesekali lewat tombol "Sesuaikan" — sama seperti menghitung fisik stok.
+- **Tidak ada laporan pajak atau kasbon.** Satu-satunya data pelanggan yang disimpan adalah nomor tujuan pada transaksi jasa (nomor meter/HP/rekening), dan itu tidak pernah ikut ke laporan yang dikirim keluar.
 - **Analisis AI default MATI.** Kalau dinyalakan, ia hanya memberi ulasan tertulis atas laporan mingguan dan bulanan — maksimal sekali sehari. Ia tidak pernah mengubah harga, stok, kas, atau transaksi, dan sistem berjalan normal tanpanya.
 - **Tidak ada printer thermal.** Struk dicetak lewat fitur cetak browser.
 
@@ -236,7 +238,9 @@ rm -rf .next .next-test .next-e2e .next-qris .next-reports .next-idem .next-f7 .
 
 - Semua rupiah **integer**, tidak pernah float.
 - Tidak ada `new Date()` di dalam modul logika — `now` selalu di-inject, supaya "server mati 3 hari" bisa diuji.
-- Stok hanya boleh berubah lewat `applyStockMovement()`.
+- Stok hanya boleh berubah lewat `applyStockMovement()`, saldo provider hanya lewat `applyProviderMovement()`.
+- `Transaction.netTotal` berarti **OMZET**, bukan yang dibayar pelanggan. Titipan jasa ada di `passthroughTotal`, dan `Payment.amount` = `|netTotal + passthroughTotal|` (§21.1).
+- Top-up saldo dari laci **bukan pengeluaran** — ia perpindahan kantong, dan ia punya sukunya sendiri di `expectedCash` (§21.4).
 - Pelunasan pembayaran punya dua lapis gerbang, dan lapis kedua ada di DB (`updateMany where status='PENDING'` + `count === 1`).
 - Endpoint uang menerima `idempotencyKey`; pengulangan mengembalikan transaksi yang sama, bukan membuat yang baru (§20).
 - Kunci sekali-pakai dibuat dari `crypto.getRandomValues`, **bukan** `crypto.randomUUID` — yang terakhir tidak ada di HTTP tanpa TLS, jadi ia bekerja di localhost dan gagal di HP kasir (§20.4).

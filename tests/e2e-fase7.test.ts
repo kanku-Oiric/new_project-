@@ -179,7 +179,6 @@ beforeAll(async () => {
     timezone: 'Asia/Jakarta',
     expenseCategories: JSON.stringify(['Operasional']),
     qrisEnabled: 'true',
-    qrisImagePath: 'qris-uji.png',
   })) {
     await prisma.setting.create({ data: { key, value } })
   }
@@ -242,20 +241,47 @@ describe('kewajiban manual di dashboard pemilik', () => {
   let trxDibatalkan = ''
   let trxVoid = ''
 
-  it('1. QRIS terlantar → shift ditutup → transaksinya dibatalkan otomatis', async () => {
+  it('1. pembayaran terlantar → shift ditutup → transaksinya dibatalkan otomatis', async () => {
     await loginAs(cashierId, CASHIER_PIN)
     const shift = await api('POST', '/api/shifts/open', { openingCash: 50_000 })
     expect(shift.status).toBe(201)
     const shiftId = String(shift.data.shiftId)
 
-    const qris = await api('POST', '/api/transactions', {
-      lines: [{ productId, qty: 2, itemDiscount: 0 }],
-      transactionDiscount: 0,
-      method: 'QRIS_STATIC',
+    // Dulu baris PENDING ini dibuat lewat layar kasir: checkout QRIS berhenti
+    // di PENDING sampai kasir menekan tombol kedua. Dengan QRIS soundbox,
+    // checkout selesai dalam satu langkah, jadi layar kasir tidak lagi bisa
+    // menghasilkannya.
+    //
+    // Mekanisme auto-cancel-nya TETAP diuji, dan barisnya dibuat langsung di
+    // database — persis seperti yang akan dilakukan webhook provider dinamis
+    // nanti, dan persis seperti baris lama yang mungkin masih tersisa di
+    // database toko. Menghapus test ini karena jalurnya berubah akan membuat
+    // penutupan shift berhenti dijaga tanpa ada yang menyadarinya.
+    trxDibatalkan = 'TRX-TERLANTAR-001'
+    await prisma.transaction.create({
+      data: {
+        trxNumber: trxDibatalkan,
+        businessDate: new Date().toISOString().slice(0, 10),
+        shiftId,
+        cashierId,
+        status: 'PENDING',
+        grossSubtotal: 30_000,
+        itemDiscountTotal: 0,
+        transactionDiscount: 0,
+        netTotal: 30_000,
+        cogsTotal: 0,
+        payments: {
+          create: [
+            {
+              method: 'QRIS_STATIC',
+              status: 'PENDING',
+              amount: 30_000,
+              providerName: 'qris-static',
+            },
+          ],
+        },
+      },
     })
-    expect(qris.status).toBe(201)
-    expect(qris.data.status).toBe('PENDING')
-    trxDibatalkan = String(qris.data.trxNumber)
 
     // Penutupan shift TIDAK boleh diblokir oleh transaksi terlantar.
     const tutup = await api('POST', `/api/shifts/${shiftId}/close`, { countedCash: 50_000 })
@@ -277,11 +303,10 @@ describe('kewajiban manual di dashboard pemilik', () => {
       method: 'QRIS_STATIC',
     })
     expect(qris.status).toBe(201)
+    // Satu langkah: kasir menekan QRIS setelah soundbox berbunyi, dan
+    // transaksinya langsung lunas. Tidak ada lagi request konfirmasi kedua.
+    expect(qris.data.status).toBe('COMPLETED')
     trxVoid = String(qris.data.trxNumber)
-
-    // Konfirmasi manual kasir — satu-satunya jalan ke PAID.
-    const confirm = await api('POST', `/api/payments/${String(qris.data.paymentId)}/confirm`, {})
-    expect(confirm.status).toBe(200)
 
     const trxId = String(qris.data.transactionId)
     const batal = await api('POST', `/api/transactions/${trxId}/void`, {

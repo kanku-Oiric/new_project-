@@ -21,6 +21,9 @@ const INPUT: ReportInput = {
       transactionDiscount: 0,
       netTotal: 30_000,
       cogsTotal: 24_000,
+      passthroughTotal: 0,
+      serviceFeeTotal: 0,
+      services: [],
       paidMethod: 'CASH',
       items: [
         {
@@ -65,6 +68,44 @@ describe('buildAiPayload', () => {
     // test ini merah. Menambah data yang keluar dari toko harus jadi keputusan
     // yang terlihat di diff, bukan efek samping.
     expect(Object.keys(payload).sort()).toEqual([...AI_PAYLOAD_KEYS].sort())
+  })
+
+  it('TIDAK memuat nomor meter, nomor HP, atau rekening pelanggan', () => {
+    // Satu-satunya data pelanggan yang disimpan sistem ini adalah `customerRef`
+    // pada baris jasa. Ia tidak pernah sampai ke sini bukan karena disaring,
+    // melainkan karena agregasi hanya menjumlahkan angka per JENIS jasa —
+    // baris per-transaksi tidak punya jalur ke payload.
+    const jasa = buildAiPayload(
+      aggregateSales({
+        ...INPUT,
+        transactions: [
+          {
+            ...INPUT.transactions[0]!,
+            serviceFeeTotal: 2_500,
+            passthroughTotal: 100_000,
+            services: [
+              {
+                kind: 'TOKEN_LISTRIK',
+                label: 'Token Listrik',
+                direction: 'PROVIDER_OUT',
+                providerName: 'Shopee',
+                passthroughAmount: 100_000,
+                serviceFeeAmount: 2_500,
+                providerCostAmount: 0,
+              },
+            ],
+          },
+        ],
+      }),
+      { kind: 'WEEKLY', periodKey: '2026-W38' },
+    )
+
+    const teks = JSON.stringify(jasa)
+    expect(jasa.jasaPembayaran.pendapatanAdmin).toBe(2_500)
+    expect(jasa.jasaPembayaran.titipanKeluar).toBe(100_000)
+    // Nama provider pun tidak ikut: model tidak membutuhkannya.
+    expect(teks).not.toContain('Shopee')
+    expect(teks).not.toContain('customerRef')
   })
 
   it('TIDAK memuat nama kasir', () => {

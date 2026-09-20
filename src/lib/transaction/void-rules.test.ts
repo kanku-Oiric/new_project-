@@ -11,12 +11,24 @@ function input(overrides: Partial<VoidEligibilityInput> = {}): VoidEligibilityIn
     businessDate: '2026-09-19',
     shiftStatus: 'OPEN',
     hasRefund: false,
+    hasService: false,
     today: '2026-09-19',
     ...overrides,
   }
 }
 
 describe('checkVoidEligibility', () => {
+  it('menolak void transaksi yang memuat jasa pembayaran', () => {
+    // Barang bisa kembali ke rak; token listrik yang sudah terbit tidak bisa
+    // ditarik kembali, dan saldo provider sudah benar-benar terpakai. Void yang
+    // "mengembalikan" saldo hanya akan membuat angka tercatat berbeda dari
+    // angka asli di aplikasi Shopee.
+    const hasil = checkVoidEligibility(input({ hasService: true }))
+    expect(hasil.canVoid).toBe(false)
+    expect(hasil.reason).toMatch(/jasa pembayaran/)
+    expect(hasil.reason).toMatch(/refund/)
+  })
+
   it('mengizinkan void hari ini saat shift masih terbuka', () => {
     expect(checkVoidEligibility(input())).toEqual({ canVoid: true, reason: null })
   })

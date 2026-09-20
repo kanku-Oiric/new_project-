@@ -62,6 +62,22 @@ export interface AiPayload {
     dariLaciKas: number
     perKategori: { kategori: string; total: number }[]
   }
+  /**
+   * Jasa pembayaran, dalam bentuk AGREGAT per jenis.
+   *
+   * Yang TIDAK punya jalur ke sini: `customerRef` — nomor meter, nomor HP, dan
+   * nomor rekening tujuan. Bukan karena disaring, tapi karena ia tidak pernah
+   * sampai ke `SalesAggregate`: agregasi hanya menjumlahkan angka per jenis
+   * jasa. Nama provider juga tidak ikut; model tidak membutuhkannya untuk
+   * menilai apa pun.
+   */
+  jasaPembayaran: {
+    pendapatanAdmin: number
+    titipanKeluar: number
+    titipanMasuk: number
+    jumlahTransaksi: number
+    perJenis: { jenis: string; jumlah: number; titipan: number; admin: number }[]
+  }
   produkTerlaris: { nama: string; qty: number; penjualanBersih: number }[]
   produkLabaTertinggi: { nama: string; labaKotor: number; qty: number }[]
   kas: { selisihTotal: number; jumlahShift: number }
@@ -83,7 +99,10 @@ export function buildAiPayload(
     periode: meta.periodKey,
     mataUang: 'IDR',
     catatanSatuan:
-      'Semua nominal adalah rupiah bulat tanpa desimal. 12500 berarti Rp 12.500.',
+      'Semua nominal adalah rupiah bulat tanpa desimal. 12500 berarti Rp 12.500. ' +
+      'Angka "titipan" pada jasaPembayaran adalah uang pelanggan yang diteruskan ke ' +
+      'provider — BUKAN omzet toko dan tidak termasuk dalam penjualan.kotor maupun ' +
+      'penjualan.bersih. Omzet dari jasa hanya "pendapatanAdmin".',
     penjualan: {
       kotor: aggregate.grossSales,
       diskon: aggregate.discounts,
@@ -108,6 +127,20 @@ export function buildAiPayload(
       perKategori: aggregate.expensesByCategory
         .slice(0, MAX_LIST)
         .map((c) => ({ kategori: c.kategori, total: c.amount })),
+    },
+    jasaPembayaran: {
+      pendapatanAdmin: aggregate.serviceFees,
+      // Titipan dikirim supaya model tahu volumenya, dan namanya sudah
+      // menyatakan bahwa ia BUKAN omzet. Prompt juga menegaskannya.
+      titipanKeluar: aggregate.passthroughOut,
+      titipanMasuk: aggregate.passthroughIn,
+      jumlahTransaksi: aggregate.serviceCount,
+      perJenis: aggregate.servicesByKind.slice(0, MAX_LIST).map((j) => ({
+        jenis: j.kind,
+        jumlah: j.count,
+        titipan: j.passthrough,
+        admin: j.fee,
+      })),
     },
     produkTerlaris: aggregate.topByQty.slice(0, MAX_LIST).map((p) => ({
       nama: p.productName,
@@ -159,6 +192,10 @@ export const AI_PAYLOAD_KEYS = [
   'penjualan',
   'metodePembayaran',
   'pengeluaran',
+  // Ditambahkan sadar, bukan efek samping: angka agregat jasa per jenis.
+  // customerRef tidak ada di sini karena ia memang tidak pernah sampai ke
+  // SalesAggregate — jalurnya tidak dibuat, bukan disaring.
+  'jasaPembayaran',
   'produkTerlaris',
   'produkLabaTertinggi',
   'kas',

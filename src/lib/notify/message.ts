@@ -1,8 +1,21 @@
-import type { ReportKind } from '../enums'
+import type { PaymentMethod, ReportKind } from '../enums'
 import { formatRupiah } from '../money'
 import type { AggregateComparison, Comparison, SalesAggregate } from '../report'
 import { formatClock } from '../time'
 import type { MessageRow, MessageSection, ReportMessage } from './types'
+
+/**
+ * Nama metode bayar untuk manusia.
+ *
+ * `Record<PaymentMethod, string>`, bukan rangkaian ternary: menambah metode di
+ * `enums.ts` tanpa memberinya nama menjadi error kompilasi di sini, bukan
+ * tulisan "QRIS" yang salah di laporan yang dikirim ke pemilik.
+ */
+const METODE_LABEL: Record<PaymentMethod, string> = {
+  CASH: 'Tunai',
+  QRIS_STATIC: 'QRIS',
+  CASH_OUT: 'Serah tunai (tarik tunai)',
+}
 
 /**
  * Menyusun isi laporan — modul murni.
@@ -110,12 +123,41 @@ export function buildReportMessage(
 
   if (aggregate.byMethod.length > 0) {
     sections.push({
-      label: 'Metode pembayaran',
+      // Labelnya menyebut "uang berpindah", bukan "penjualan", karena sejak ada
+      // jasa angka ini memang bukan omzet: ia termasuk titipan yang cuma mampir
+      // di laci. Pemilik harus bisa mencocokkannya dengan hitungan fisik laci,
+      // dan itu tidak mungkin kalau angkanya omzet.
+      label: 'Metode pembayaran (uang yang berpindah, termasuk titipan jasa)',
       rows: aggregate.byMethod.map((m) =>
-        row(
-          m.method === 'CASH' ? 'Tunai' : 'QRIS',
-          `${formatRupiah(m.amount)} · ${formatCount(m.count, 'transaksi')}`,
+        row(METODE_LABEL[m.method], `${formatRupiah(m.amount)} · ${formatCount(m.count, 'transaksi')}`),
+      ),
+    })
+  }
+
+  if (aggregate.serviceCount > 0) {
+    sections.push({
+      label: 'Jasa pembayaran (titipan BUKAN omzet)',
+      rows: [
+        ...aggregate.servicesByKind.map((j) =>
+          row(
+            j.label,
+            `${formatCount(j.count, 'transaksi')} · titipan ${formatRupiah(j.passthrough)} · admin ${formatRupiah(j.fee)}`,
+          ),
         ),
+        row('Pendapatan admin (masuk omzet)', formatRupiah(aggregate.serviceFees), true),
+        row('Titipan diteruskan ke provider', formatRupiah(aggregate.passthroughOut)),
+        ...(aggregate.passthroughIn > 0
+          ? [row('Titipan masuk (tarik tunai)', formatRupiah(aggregate.passthroughIn))]
+          : []),
+      ],
+    })
+  }
+
+  if (aggregate.providerBalances.length > 0) {
+    sections.push({
+      label: 'Saldo provider (keadaan saat laporan dibuat)',
+      rows: aggregate.providerBalances.map((p) =>
+        row(p.providerName, formatRupiah(p.saldo), p.saldo < 0),
       ),
     })
   }

@@ -18,6 +18,8 @@ export interface VoidEligibilityInput {
   shiftStatus: ShiftStatus
   /** Sudah ada refund atas transaksi ini? */
   hasRefund: boolean
+  /** Transaksi ini memuat jasa pembayaran (token listrik, transfer, dll)? */
+  hasService: boolean
   /** businessDate hari ini. */
   today: string
 }
@@ -47,6 +49,21 @@ export function checkVoidEligibility(input: VoidEligibilityInput): VoidEligibili
     return {
       canVoid: false,
       reason: 'Transaksi sudah pernah di-refund — gunakan refund untuk sisanya',
+    }
+  }
+  // Barang bisa dikembalikan ke rak. Token listrik yang sudah terbit tidak bisa
+  // ditarik kembali, dan saldo provider sudah benar-benar terpakai. Void yang
+  // "mengembalikan" saldo hanya akan membuat angka tercatat berbeda dari angka
+  // asli di aplikasi Shopee — dan selisih itu baru ketahuan saat rekonsiliasi,
+  // tanpa ada yang ingat sebabnya.
+  //
+  // Yang benar adalah refund: uangnya memang harus keluar dari toko, dan
+  // pemilik yang memutuskan berapa, karena titipannya sudah terlanjur dibayarkan.
+  if (input.hasService) {
+    return {
+      canVoid: false,
+      reason:
+        'Transaksi memuat jasa pembayaran yang sudah dibayarkan ke provider — gunakan refund, dan sesuaikan saldo provider secara manual',
     }
   }
   if (input.businessDate !== input.today) {

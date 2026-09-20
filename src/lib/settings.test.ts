@@ -23,7 +23,7 @@ describe('default setting', () => {
   })
 
   it('nilai kosong pada setting opsional tetap terbaca, bukan melempar', () => {
-    for (const key of ['installDate', 'qrisImagePath', 'discordWebhookUrl'] as const) {
+    for (const key of ['installDate', 'storeAddress', 'discordWebhookUrl'] as const) {
       expect(SETTING_DEFS[key].schema.safeParse('').success).toBe(true)
     }
   })

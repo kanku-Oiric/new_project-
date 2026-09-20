@@ -150,7 +150,7 @@ export async function getJson<T>(url: string): Promise<ApiOutcome<T>> {
 }
 
 async function sendJson<T>(
-  method: 'POST' | 'PATCH',
+  method: 'POST' | 'PATCH' | 'DELETE',
   url: string,
   payload: unknown,
 ): Promise<ApiOutcome<T>> {
@@ -178,6 +178,17 @@ export async function postJson<T>(url: string, payload: unknown): Promise<ApiOut
 
 export async function patchJson<T>(url: string, payload: unknown): Promise<ApiOutcome<T>> {
   return sendJson<T>('PATCH', url, payload)
+}
+
+/**
+ * DELETE dengan body JSON.
+ *
+ * Body pada DELETE dipakai untuk PIN pemilik. Alternatifnya menaruh PIN di
+ * query string, dan itu berakhir tercatat di log server serta riwayat browser —
+ * tempat yang paling tidak tepat untuk PIN.
+ */
+export async function deleteJson<T>(url: string, payload: unknown): Promise<ApiOutcome<T>> {
+  return sendJson<T>('DELETE', url, payload)
 }
 
 /**

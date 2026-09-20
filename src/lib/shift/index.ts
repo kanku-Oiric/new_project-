@@ -26,21 +26,59 @@ export interface ShiftCashInputs {
   cashRefunds: number
   /** Σ Expense.amount — paidFrom CASH_DRAWER, belum dihapus. */
   cashExpenses: number
+  /**
+   * Σ top-up saldo provider yang uangnya diambil dari laci.
+   *
+   * Ini BUKAN pengeluaran — ia perpindahan kantong: uang pindah dari laci ke
+   * saldo Shopee/GoPay milik toko, dan jumlah kekayaan toko tidak berubah.
+   * Karena itu ia tidak pernah muncul di laporan pengeluaran dan tidak
+   * mengurangi laba. Tapi laci memang berkurang, jadi ia harus ada di sini.
+   *
+   * Sengaja TIDAK di-net ke dalam `cashSales`: kasir harus melihat barisnya
+   * sendiri saat tutup shift ("Top-up Shopee dari laci: −1.000.000"). Selisih
+   * kas yang tidak bisa ditelusuri ke barisnya adalah selisih yang akan
+   * disalahkan ke orangnya.
+   */
+  cashProviderTopups: number
+  /**
+   * Σ uang tunai yang DISERAHKAN ke pelanggan pada transaksi tarik tunai
+   * (Payment.method = CASH_OUT). Positif, dan dikurangkan.
+   */
+  cashServicePayouts: number
 }
 
 /**
- * expectedCash = kas awal + penjualan tunai − refund tunai − pengeluaran kas
+ * expectedCash = kas awal
+ *              + penjualan tunai      (sudah termasuk titipan jasa yang diterima)
+ *              − refund tunai
+ *              − pengeluaran kas
+ *              − top-up saldo dari laci
+ *              − serah tunai (tarik tunai)
  *
  * Boleh negatif: kalau pengeluaran melebihi kas awal ditambah penjualan, itu
  * keadaan nyata yang harus terlihat, bukan dipaksa jadi nol.
+ *
+ * Catatan untuk jasa pembayaran: `cashSales` menjumlahkan `Payment.amount`, dan
+ * sejak ada jasa angka itu adalah UANG YANG BERPINDAH — omzet ditambah titipan.
+ * Itu memang yang benar untuk laci: uang titipan Rp 100.000 betul-betul masuk
+ * ke laci sebelum diteruskan ke provider lewat top-up berikutnya.
  */
 export function expectedCash(inputs: ShiftCashInputs): number {
   assertRupiah(inputs.openingCash, 'kas awal')
   assertRupiah(inputs.cashSales, 'penjualan tunai')
   assertRupiah(inputs.cashRefunds, 'refund tunai')
   assertRupiah(inputs.cashExpenses, 'pengeluaran kas')
+  assertRupiah(inputs.cashProviderTopups, 'top-up saldo dari laci')
+  assertRupiah(inputs.cashServicePayouts, 'serah tunai')
 
-  return inputs.openingCash + inputs.cashSales - inputs.cashRefunds - inputs.cashExpenses
+  return (
+    inputs.openingCash +
+    inputs.cashSales -
+    inputs.cashRefunds -
+    inputs.cashExpenses -
+    inputs.cashProviderTopups -
+    inputs.cashServicePayouts
+  )
 }
 
 /**
@@ -84,6 +122,8 @@ export function buildShiftSummary(inputs: ShiftSummaryInputs): ShiftSummary {
     cashSales: inputs.cashSales,
     cashRefunds: inputs.cashRefunds,
     cashExpenses: inputs.cashExpenses,
+    cashProviderTopups: inputs.cashProviderTopups,
+    cashServicePayouts: inputs.cashServicePayouts,
     expectedCash: expected,
     countedCash: counted,
     difference: counted === null ? null : cashDifference(counted, expected),

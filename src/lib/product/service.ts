@@ -403,6 +403,97 @@ async function stockInInTx(
   })
 }
 
+export interface DeleteProductResult {
+  productId: string
+  nama: string
+  /** `true` = barisnya benar-benar dihapus. `false` = dinonaktifkan. */
+  hardDeleted: boolean
+}
+
+/**
+ * Hapus produk.
+ *
+ * Dua perilaku, dan perbedaannya bukan kenyamanan melainkan kejujuran data:
+ *
+ *  - Produk yang BELUM PERNAH dipakai (tidak ada di transaksi mana pun dan
+ *    tidak punya pergerakan stok selain INITIAL) benar-benar dihapus. Ini kasus
+ *    "salah ketik saat menambah produk", dan menyisakan barisnya hanya akan
+ *    mengotori daftar selamanya.
+ *
+ *  - Produk yang sudah pernah TERJUAL tidak bisa dihapus, dan tidak boleh
+ *    bisa. `TransactionItem` menyimpan snapshot nama dan harga, tapi relasinya
+ *    `onDelete: Restrict`, dan yang lebih penting: laporan laba bulan lalu
+ *    berdiri di atas baris-baris itu. Yang dilakukan adalah menonaktifkannya —
+ *    hilang dari layar kasir, tetap ada di sejarah.
+ *
+ * Keduanya dijawab terang-terangan lewat `hardDeleted`, supaya layar tidak
+ * mengatakan "terhapus" untuk sesuatu yang sebenarnya masih ada.
+ */
+export async function deleteProduct(
+  actor: ProductActor & { authorizedByUserId: string },
+  productId: string,
+): Promise<DeleteProductResult> {
+  return prisma.$transaction(async (tx) => {
+    const product = await tx.product.findUnique({ where: { id: productId } })
+    if (!product) throw new NotFoundError('Produk tidak ditemukan')
+
+    const [terjual, bergerak] = await Promise.all([
+      tx.transactionItem.count({ where: { productId } }),
+      tx.stockMovement.count({ where: { productId, reason: { not: 'INITIAL' } } }),
+    ])
+
+    const pernahDipakai = terjual > 0 || bergerak > 0
+
+    if (pernahDipakai) {
+      if (!product.aktif) {
+        throw new ConflictError('Produk sudah nonaktif')
+      }
+
+      await tx.product.update({ where: { id: productId }, data: { aktif: false } })
+
+      await recordAudit(tx, actor, {
+        action: 'PRODUCT_DELETE',
+        summary: `Produk ${product.nama} (${product.sku}) dinonaktifkan — sudah punya riwayat penjualan`,
+        entityType: 'Product',
+        entityId: productId,
+        before: { aktif: true, stok: product.stok },
+        after: {
+          aktif: false,
+          alasan: 'punya riwayat',
+          terjual,
+          pergerakanStok: bergerak,
+          authorizedByUserId: actor.authorizedByUserId,
+        },
+      })
+
+      return { productId, nama: product.nama, hardDeleted: false }
+    }
+
+    // Pergerakan INITIAL ikut terhapus: ia hanya ada untuk menjaga invarian
+    // "stok == Σ qtyChange" pada produk yang sekarang tidak ada lagi.
+    await tx.stockMovement.deleteMany({ where: { productId } })
+    await tx.product.delete({ where: { id: productId } })
+
+    await recordAudit(tx, actor, {
+      action: 'PRODUCT_DELETE',
+      summary: `Produk ${product.nama} (${product.sku}) dihapus — belum pernah dipakai`,
+      entityType: 'Product',
+      entityId: productId,
+      before: {
+        nama: product.nama,
+        sku: product.sku,
+        kategori: product.kategori,
+        hargaBeli: product.hargaBeli,
+        hargaJual: product.hargaJual,
+        stok: product.stok,
+      },
+      after: { dihapus: true, authorizedByUserId: actor.authorizedByUserId },
+    })
+
+    return { productId, nama: product.nama, hardDeleted: true }
+  })
+}
+
 /** Penyesuaian stok manual: koreksi kesalahan (ADJUSTMENT) atau hasil hitung fisik (OPNAME). */
 export async function adjustStock(
   actor: ProductActor,

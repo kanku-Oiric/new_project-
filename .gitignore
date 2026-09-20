@@ -20,6 +20,7 @@ next-env.d.ts
 .next-f7/
 .next-ai/
 .next-build/
+.next-jasa/
 
 # ── Data toko — JANGAN pernah masuk version control ──────────────────────────
 # Isinya penjualan sungguhan, PIN ter-hash, dan gambar QRIS toko.

@@ -1130,3 +1130,121 @@ Aturannya satu baris: **kunci yang sama selama isi request sama, kunci baru begi
 Client **tidak** perlu menghitung sidik jari yang sama dengan server. Ia hanya perlu tahu *kapan isinya berubah*; sidik jari di server adalah lapisan kedua yang menangkap kalau client keliru.
 
 PIN pemilik sengaja tidak ikut menentukan kunci refund: kalau ia ikut, salah ketik PIN lalu mengulang akan menghasilkan kunci baru dan refund kedua.
+
+
+---
+
+## 21. Jasa pembayaran
+
+Toko menjual jasa pembayaran: token listrik, PLN pascabayar, PDAM, top-up e-wallet (GoPay/OVO/Dana/ShopeePay), transfer bank, dan tarik tunai.
+
+**Sistem ini tidak memanggil API provider mana pun.** Kasir membayarnya lewat aplikasi lain di HP-nya — Shopee, GoPay — lalu mencatatnya di sini. Yang dibangun adalah pencatatan, bukan integrasi, dan itu dinyatakan terang supaya tidak ada yang mengira sistem bisa memeriksa apakah tokennya benar-benar terbit.
+
+### 21.1 Keputusan yang mengunci semuanya: `netTotal` tetap berarti OMZET
+
+Untuk barang, "yang dibayar pelanggan" dan "omzet" adalah angka yang sama. Untuk jasa, tidak:
+
+```
+Token listrik Rp 100.000, biaya admin Rp 2.500
+
+  pelanggan menyerahkan   Rp 102.500   ← uang yang berpindah
+  omzet toko              Rp   2.500   ← yang masuk laporan penjualan
+  titipan                 Rp 100.000   ← mampir di laci, lalu diteruskan ke provider
+```
+
+Tiga angka untuk satu transaksi. Yang dipertahankan artinya adalah **omzet**:
+
+| Kolom | Isi |
+|---|---|
+| `Transaction.netTotal` | OMZET — barang + biaya admin. Titipan tidak ada di sini |
+| `Transaction.passthroughTotal` | Titipan, BERTANDA. Negatif untuk tarik tunai |
+| `Transaction.serviceFeeTotal` | Σ biaya admin. Bagian *dari* `netTotal`, bukan tambahan |
+| `Payment.amount` | `|netTotal + passthroughTotal|` — uang yang benar-benar berpindah |
+
+Alasannya bukan selera. `aggregateSales()` menjumlahkan `netTotal` menjadi Net Sales. Kalau titipan ikut ke sana, setiap query laporan harus **ingat** menguranginya, dan omzet tercemar begitu satu tempat lupa. Dengan pemisahan ini titipan tidak punya jalur menuju Gross Sales sama sekali — sifat yang sama seperti `buildAiPayload` yang secara konstruksi tidak bisa menerima credential.
+
+Harganya disebut terang: **invarian lama `Payment.amount === Transaction.netTotal` berakhir.** Itu jujur — uang yang bergerak memang bukan angka omzet.
+
+### 21.2 Arah uang, dan kenapa tarik tunai berdiri sendiri
+
+Lima jasa pertama bergerak satu arah, tarik tunai bergerak sebaliknya:
+
+```
+PROVIDER_OUT   pelanggan menyerahkan uang → saldo provider BERKURANG
+               token listrik, PLN, PDAM, top-up e-wallet, transfer bank
+
+PROVIDER_IN    pelanggan transfer ke rekening toko → saldo provider BERTAMBAH,
+               lalu toko MENYERAHKAN uang tunai
+               tarik tunai
+```
+
+`TransactionService.passthroughAmount` **selalu positif**; arahnya dinyatakan kolom `direction`. Angka bertanda akan menabrak `assertRupiah` di seluruh modul murni dan menyebarkan "uang negatif" ke tempat yang tidak siap menerimanya.
+
+`direction`, `label`, dan `providerName` adalah **snapshot** — alasan yang sama seperti `unitCost`: pemetaan jenis→arah dan nama provider boleh berubah besok, sejarah transaksi tidak boleh ikut berubah.
+
+Tarik tunai **tidak boleh dicampur** dengan barang maupun jasa lain. Satu transaksi dengan dua arah uang sekaligus menghasilkan angka yang tidak bisa direkonsiliasi dengan laci maupun dengan mutasi rekening, dan tidak ada kegunaan nyatanya. Ditegakkan di `computeCartWithServices`, bukan di UI saja.
+
+Metode pembayarannya `CASH_OUT`, dengan `Payment.amount` tetap positif (= uang yang diserahkan). Checkout menolak transaksi yang arah uangnya tidak cocok dengan metodenya: tarik tunai yang dikirim dengan `method: CASH` akan dicatat sebagai uang MASUK sebesar nilai mutlaknya — laci toko bertambah di atas kertas sebesar uang yang justru baru saja keluar.
+
+### 21.3 Saldo provider: akun uang, bukan inventori
+
+`ServiceProvider.saldo` adalah uang sungguhan yang duduk di aplikasi Shopee/GoPay milik toko. Tidak ada API yang bisa ditanyai berapa isinya, jadi yang membuatnya bisa dipercaya hanya dua hal: setiap pergerakan tercatat dengan saldo sebelum dan sesudahnya, dan ada jalan resmi untuk merekonsiliasinya terhadap angka asli di aplikasinya.
+
+`applyProviderMovement()` adalah **satu-satunya** jalan `saldo` boleh berubah, persis seperti `applyStockMovement()` untuk `products.stok`. Perubahannya lewat raw SQL `SET saldo = saldo + ?`, bukan baca-lalu-tulis — dan di sini taruhannya uang:
+
+```
+Kasir A: baca saldo=500.000 → hitung 500.000−100.000 → tulis 400.000
+Kasir B: baca saldo=500.000 → hitung 500.000−100.000 → tulis 400.000
+Hasil: dua token terjual, saldo cuma turun sekali ← Rp 100.000 hilang
+```
+
+Saldo boleh **minus**, dengan peringatan di layar kasir. Keputusan yang sama seperti stok minus: menolak penjualan nyata karena angka saldo yang mungkin sudah usang lebih merugikan daripada mencatat minus lalu merekonsiliasinya.
+
+Pergerakan saldo terjadi **di dalam DB transaction yang sama** seperti pengurangan stok dan pelunasan pembayaran. Satu langkah gagal, semuanya batal: mustahil ada titipan tercatat lunas tanpa saldo provider ikut bergerak.
+
+### 21.4 Top-up adalah perpindahan kantong, bukan pengeluaran
+
+Mengisi saldo Shopee dengan uang dari laci **bukan biaya**. Kekayaan toko tidak berubah — uangnya cuma pindah tempat. Karena itu top-up:
+
+- **tidak** muncul di laporan pengeluaran,
+- **tidak** mengurangi laba,
+- **tetapi** mengurangi uang di laci, jadi ia masuk `expectedCash` sebagai sukunya sendiri.
+
+Kalau ia dicatat sebagai pengeluaran, laba toko akan terlihat anjlok setiap kali pemilik mengisi saldo.
+
+```
+expectedCash = openingCash
+             + cashSales             (Σ Payment.amount — sudah termasuk titipan tunai)
+             − cashRefunds
+             − cashExpenses
+             − cashProviderTopups    (TOPUP dengan paidFrom = CASH_DRAWER)
+             − cashServicePayouts    (Payment.method = CASH_OUT)
+```
+
+Dua suku terakhir sengaja **tidak** di-net ke dalam `cashSales`: kasir harus melihat barisnya sendiri saat tutup shift — *"Top-up Shopee dari laci: −300.000"*. Selisih kas yang tidak bisa ditelusuri ke barisnya adalah selisih yang akan disalahkan ke orangnya.
+
+`Rekonsiliasi saldo` setara opname untuk stok, dan wajib **PIN pemilik setiap kali**: yang diubah adalah angka uang, dan tidak ada bukti di dalam sistem yang bisa membenarkannya — buktinya ada di layar aplikasi Shopee. Yang diketik pemilik adalah saldo ASLI; selisihnya yang dicatat sebagai pergerakan.
+
+### 21.5 Void jasa ditolak, refund tidak
+
+Barang bisa kembali ke rak. Token listrik yang sudah terbit tidak bisa ditarik kembali, dan saldo provider sudah benar-benar terpakai. Void yang "mengembalikan" saldo hanya akan membuat angka tercatat berbeda dari angka asli di aplikasi Shopee — dan selisih itu baru ketahuan saat rekonsiliasi berikutnya, tanpa ada yang ingat sebabnya.
+
+Karena itu `checkVoidEligibility` menolak transaksi yang memuat baris jasa, dengan alasan yang menyebut jalan keluarnya: gunakan refund, dan sesuaikan saldo provider secara manual.
+
+### 21.6 Data pelanggan
+
+`TransactionService.customerRef` — nomor meter, nomor HP, nomor rekening tujuan — adalah **satu-satunya** data pelanggan yang disimpan sistem ini. Ia disimpan karena dibutuhkan saat pelanggan komplain, dan dicetak di struk supaya bisa diperiksa sebelum pelanggan meninggalkan toko.
+
+Ia **tidak punya jalur** ke payload AI maupun ke pesan laporan yang keluar dari jaringan toko: agregasi laporan hanya menjumlahkan angka per JENIS jasa, jadi baris per-transaksi tidak pernah sampai ke `SalesAggregate`. Dijaga test, bukan kesepakatan (`tests/e2e-jasa.test.ts` nomor 19, `src/lib/ai/ai.test.ts`).
+
+### 21.7 Yang diatur di kode, dan yang diatur pemilik
+
+Daftar enam jenis jasa ada di **kode** (`src/lib/service/catalog.ts`), bukan tabel yang bisa di-CRUD. Menambah jenis jasa bukan pekerjaan harian toko, dan tiap jenis punya arah uang serta bentuk form yang berbeda — dua hal yang tidak bisa diisi lewat layar pengaturan tanpa membuat pemilik memilih sesuatu yang tidak ia pahami.
+
+Yang **bisa** diatur pemilik: daftar provider beserta saldonya (halaman Saldo), dan biaya admin bawaan per jenis (`serviceFeeDefaults`). Biaya admin per transaksi tetap bisa diubah kasir.
+
+### 21.8 Potongan provider
+
+`TransactionService.providerCostAmount` menampung potongan yang diambil provider dari toko, kalau ada. Ia masuk **COGS**, sehingga laba kotor jasa = biaya admin − potongan provider. Default nol.
+
+Kolomnya ada sejak awal dengan sengaja: kalau ternyata provider memotong dan kolomnya belum ada, laporan akan **melebih-lebihkan laba** setiap bulan sampai seseorang menyadarinya, dan memperbaikinya belakangan berarti menghitung ulang seluruh riwayat.

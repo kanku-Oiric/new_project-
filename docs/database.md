@@ -368,6 +368,66 @@ model Expense {
   @@index([deletedAt])
 }
 
+// ─────────────────────────────── JASA PEMBAYARAN ───────────────────────────────
+
+model ServiceProvider {
+  id        String   @id @default(uuid())
+  nama      String   @unique                     // "Shopee", "GoPay", "BRI"
+  jenis     String                               // "EWALLET"|"BANK"|"PPOB"
+  saldo     Int      @default(0)                 // HANYA lewat applyProviderMovement()
+  urutan    Int      @default(0)                 // urutan tombol di layar kasir
+  aktif     Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ProviderBalanceMovement {
+  id            String  @id @default(uuid())
+  providerId    String
+  amountChange  Int                              // BERTANDA: + masuk, − keluar
+  reason        String                           // "INITIAL"|"TOPUP"|"SERVICE"|"SERVICE_FAILED"|"ADJUSTMENT"
+  balanceBefore Int
+  balanceAfter  Int
+  paidFrom      String?                          // reason=TOPUP: "CASH_DRAWER" → expected cash berkurang
+  refType       String?                          // "TRANSACTION"|"MANUAL"
+  refId         String?
+  userId        String
+  shiftId       String?
+  businessDate  String
+  note          String?
+  createdAt     DateTime @default(now())
+
+  idempotencyKey         String? @unique
+  idempotencyFingerprint String?
+
+  @@index([providerId, createdAt])
+  @@index([businessDate])
+  @@index([reason])
+  @@index([refType, refId])
+}
+
+model TransactionService {
+  id            String @id @default(uuid())
+  transactionId String
+
+  kind      String   // "TOKEN_LISTRIK"|"PLN_PASCABAYAR"|"PDAM"|"EWALLET_TOPUP"|"TRANSFER_BANK"|"TARIK_TUNAI"
+  direction String   // SNAPSHOT: "PROVIDER_OUT" (pelanggan bayar) | "PROVIDER_IN" (toko bayar)
+  label     String   // SNAPSHOT nama jasa saat dijual
+
+  providerId   String
+  providerName String // SNAPSHOT
+
+  passthroughAmount  Int                          // SELALU POSITIF; arah dari `direction`
+  serviceFeeAmount   Int                          // pendapatan toko — HANYA ini yang omzet
+  providerCostAmount Int @default(0)              // potongan provider → masuk COGS
+
+  customerRef String?                             // nomor meter/HP/rekening — tidak pernah keluar toko
+  note        String?
+
+  @@index([transactionId])
+  @@index([kind])
+}
+
 // ─────────────────────────────── AUDIT ───────────────────────────────
 
 model AuditLog {
@@ -559,6 +619,7 @@ Semua nilai disimpan sebagai `String`, di-parse per key lewat Zod di `lib/settin
 | `20260918122320_init` | Seluruh 16 tabel di §3 |
 | `20260920000000_add_idempotency_key` | `idempotencyKey` + `idempotencyFingerprint` di `transactions` dan `refunds` |
 | `20260920120000_idempotency_expense_stock` | Kolom yang sama di `expenses` dan `stock_movements` |
+| `20260920210000_jasa_pembayaran` | `passthroughTotal` + `serviceFeeTotal` di `transactions`; tabel `service_providers`, `provider_balance_movements`, `transaction_services` |
 | — | PRAGMA **bukan** migration; dijalankan per koneksi saat startup (`architecture.md` §6.1) |
 
 Ketiga migration idempotency bersifat **aditif**: kolomnya nullable dan tidak ada

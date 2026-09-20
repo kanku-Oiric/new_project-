@@ -96,11 +96,35 @@ export function assertTransition(
 }
 
 /** Apakah metode ini selesai seketika saat transaksi dibuat. */
+/**
+ * Metode yang uangnya sudah berpindah saat baris pembayaran dibuat.
+ *
+ * Ketiganya `true` sejak QRIS memakai soundbox, dan fungsi ini TETAP ada dengan
+ * sengaja: ia titik tempat provider dinamis (Midtrans/Xendit) nanti menjawab
+ * `false`, dan alur PENDING → PAID lewat webhook yang sudah ada di state
+ * machine langsung berlaku tanpa menyentuh kode transaksi.
+ *
+ * Menghapusnya karena "semua true" berarti membongkar satu-satunya tempat
+ * perbedaan itu bisa dinyatakan, lalu memasangnya kembali nanti di banyak
+ * tempat sekaligus.
+ */
 export function settlesImmediately(method: PaymentMethod): boolean {
   // Tunai: uang sudah di tangan kasir saat tombol ditekan.
-  // QRIS statis: menunggu kasir melihat notifikasi masuk di HP-nya, lalu
-  // menekan konfirmasi. Tidak pernah otomatis.
-  return method === 'CASH'
+  // Serah tunai: uang diserahkan saat itu juga, tidak ada yang ditunggu.
+  // QRIS soundbox: kasir menekan tombolnya SETELAH kotaknya berbunyi, jadi
+  // uangnya sudah masuk. Tidak ada timer dan tidak ada yang otomatis — yang
+  // berubah cuma jumlah langkah manusia, dari dua menjadi satu (docs/qris.md §3).
+  return method === 'CASH' || method === 'CASH_OUT' || method === 'QRIS_STATIC'
+}
+
+/**
+ * Metode yang uangnya KELUAR dari laci, bukan masuk.
+ *
+ * Dipisah sebagai fungsi, bukan perbandingan literal yang berserak, supaya
+ * penambahan metode keluar berikutnya tidak menyisakan satu tempat yang lupa.
+ */
+export function paysOutCash(method: PaymentMethod): boolean {
+  return method === 'CASH_OUT'
 }
 
 // ─────────────────────────────── Tunai ───────────────────────────────

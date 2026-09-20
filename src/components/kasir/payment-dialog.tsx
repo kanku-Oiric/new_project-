@@ -11,16 +11,29 @@ import type { PaymentMethod } from '@/lib/enums'
  * Tombol QRIS ditampilkan mati DENGAN KETERANGAN saat belum dikonfigurasi, bukan
  * disembunyikan: kasir yang melihat tombol mati tanpa alasan akan menelepon
  * pemilik untuk hal yang sudah punya jawaban di layar.
+ *
+ * Menekan QRIS sekarang LANGSUNG menyelesaikan transaksi — tidak ada layar QR
+ * dan tidak ada konfirmasi kedua. Toko memakai soundbox: QR sudah tertempel di
+ * meja dan kotaknya berbunyi saat uang masuk, jadi kasir menekan tombol ini
+ * setelah mendengar bunyinya (docs/qris.md §3).
+ *
+ * Saat uang justru KELUAR dari laci (tarik tunai), seluruh bagian tunai berganti
+ * makna: tidak ada uang diterima, tidak ada kembalian, dan satu-satunya tombol
+ * yang masuk akal adalah "Serahkan uang".
  */
 export function PaymentDialog({
   amount,
+  payDirection,
   busy,
   error,
   qris,
   onCancel,
   onPay,
 }: {
+  /** Uang yang berpindah — bukan omzet. Untuk jasa keduanya berbeda jauh. */
   amount: number
+  /** `IN` pelanggan membayar, `OUT` toko menyerahkan uang tunai. */
+  payDirection: 'IN' | 'OUT'
   busy: boolean
   error: string | null
   /** Keadaan provider QRIS, apa adanya dari server. */
@@ -28,6 +41,7 @@ export function PaymentDialog({
   onCancel: () => void
   onPay: (method: PaymentMethod, amountTendered: number) => void
 }) {
+  const keluar = payDirection === 'OUT'
   const [text, setText] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -58,10 +72,50 @@ export function PaymentDialog({
     >
       <div className="w-full max-w-md rounded-t-2xl bg-kasir-surface p-4 sm:rounded-2xl">
         <div className="mb-4 flex items-baseline justify-between">
-          <h2 className="text-sm font-medium text-kasir-muted">Total tagihan</h2>
-          <p className="text-3xl font-semibold text-kasir-text">{formatRupiah(amount)}</p>
+          <h2 className="text-sm font-medium text-kasir-muted">
+            {keluar ? 'Diserahkan ke pelanggan' : 'Total tagihan'}
+          </h2>
+          <p
+            className={`text-3xl font-semibold ${keluar ? 'text-kasir-warning' : 'text-kasir-text'}`}
+          >
+            {formatRupiah(amount)}
+          </p>
         </div>
 
+        {keluar ? (
+          <>
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-kasir-warning">
+              Pastikan transfer pelanggan sudah masuk ke rekening/e-wallet toko sebelum
+              menyerahkan uang. Sistem ini tidak bisa memeriksanya.
+            </p>
+
+            {error && (
+              <p role="alert" className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-kasir-danger">
+                {error}
+              </p>
+            )}
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={busy}
+                className="h-14 flex-1 rounded-xl border border-kasir-border bg-kasir-surface text-base disabled:opacity-40"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => onPay('CASH_OUT', 0)}
+                disabled={busy}
+                className="h-14 flex-[2] rounded-xl bg-kasir-warning text-base font-medium text-white disabled:opacity-40"
+              >
+                {busy ? 'Memproses…' : 'Sudah diserahkan'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
         <label className="block">
           <span className="mb-1 block text-xs text-kasir-muted">Uang diterima</span>
           <input
@@ -141,12 +195,18 @@ export function PaymentDialog({
             disabled={busy || !qris.configured}
             className="h-12 w-full rounded-xl border border-kasir-border text-base text-kasir-text disabled:border-dashed disabled:text-kasir-muted disabled:opacity-70"
           >
-            {qris.configured ? 'Bayar dengan QRIS' : qris.label}
+            {qris.configured ? 'Sudah bayar QRIS' : qris.label}
           </button>
-          {!qris.configured && qris.hint && (
-            <p className="mt-1 text-xs text-kasir-muted">{qris.hint}</p>
+          {qris.configured ? (
+            <p className="mt-1 text-xs text-kasir-muted">
+              Tekan setelah soundbox berbunyi. Transaksi langsung tercatat lunas.
+            </p>
+          ) : (
+            qris.hint && <p className="mt-1 text-xs text-kasir-muted">{qris.hint}</p>
           )}
         </div>
+          </>
+        )}
       </div>
     </div>
   )

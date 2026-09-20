@@ -32,32 +32,56 @@ async function gatherSummary(
   const shift = await db.shift.findUnique({ where: { id: shiftId } })
   if (!shift) throw new NotFoundError('Shift tidak ditemukan')
 
-  const [cashPaid, nonCashPaid, refunds, expenses, completedCount, pendingCount] =
-    await Promise.all([
-      db.payment.aggregate({
-        _sum: { amount: true },
-        where: {
-          method: 'CASH',
-          status: 'PAID',
-          transaction: { shiftId, status: 'COMPLETED' },
-        },
-      }),
-      db.payment.aggregate({
-        _sum: { amount: true },
-        where: {
-          method: { not: 'CASH' },
-          status: 'PAID',
-          transaction: { shiftId, status: 'COMPLETED' },
-        },
-      }),
-      db.refund.aggregate({ _sum: { amount: true }, where: { shiftId, method: 'CASH' } }),
-      db.expense.aggregate({
-        _sum: { amount: true },
-        where: { shiftId, paidFrom: 'CASH_DRAWER', deletedAt: null },
-      }),
-      db.transaction.count({ where: { shiftId, status: 'COMPLETED' } }),
-      db.transaction.count({ where: { shiftId, status: 'PENDING' } }),
-    ])
+  const [
+    cashPaid,
+    nonCashPaid,
+    cashOutPaid,
+    refunds,
+    expenses,
+    topups,
+    completedCount,
+    pendingCount,
+  ] = await Promise.all([
+    db.payment.aggregate({
+      _sum: { amount: true },
+      where: {
+        method: 'CASH',
+        status: 'PAID',
+        transaction: { shiftId, status: 'COMPLETED' },
+      },
+    }),
+    db.payment.aggregate({
+      _sum: { amount: true },
+      where: {
+        // `notIn`, bukan `not: 'CASH'`. Sejak ada CASH_OUT, "bukan tunai"
+        // tidak lagi sama dengan "bukan uang kertas": serah tunai adalah uang
+        // kertas yang KELUAR, dan menghitungnya sebagai penjualan non-tunai
+        // akan menaikkan angka QRIS sebesar uang yang justru baru saja keluar.
+        method: { notIn: ['CASH', 'CASH_OUT'] },
+        status: 'PAID',
+        transaction: { shiftId, status: 'COMPLETED' },
+      },
+    }),
+    db.payment.aggregate({
+      _sum: { amount: true },
+      where: {
+        method: 'CASH_OUT',
+        status: 'PAID',
+        transaction: { shiftId, status: 'COMPLETED' },
+      },
+    }),
+    db.refund.aggregate({ _sum: { amount: true }, where: { shiftId, method: 'CASH' } }),
+    db.expense.aggregate({
+      _sum: { amount: true },
+      where: { shiftId, paidFrom: 'CASH_DRAWER', deletedAt: null },
+    }),
+    db.providerBalanceMovement.aggregate({
+      _sum: { amountChange: true },
+      where: { shiftId, reason: 'TOPUP', paidFrom: 'CASH_DRAWER' },
+    }),
+    db.transaction.count({ where: { shiftId, status: 'COMPLETED' } }),
+    db.transaction.count({ where: { shiftId, status: 'PENDING' } }),
+  ])
 
   return buildShiftSummary({
     openingCash: shift.openingCash,
@@ -66,6 +90,10 @@ async function gatherSummary(
     cashSales: cashPaid._sum.amount ?? 0,
     cashRefunds: refunds._sum.amount ?? 0,
     cashExpenses: expenses._sum.amount ?? 0,
+    // amountChange top-up selalu positif (saldo bertambah); yang dikurangkan
+    // dari laci adalah nominal yang sama.
+    cashProviderTopups: topups._sum.amountChange ?? 0,
+    cashServicePayouts: cashOutPaid._sum.amount ?? 0,
     nonCashSales: nonCashPaid._sum.amount ?? 0,
     transactionCount: completedCount,
     pendingCount,

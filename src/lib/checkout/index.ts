@@ -1,17 +1,25 @@
 import type { Prisma } from '@prisma/client'
 import { recordAudit, type AuditActor } from '../audit'
-import { computeCart, type CartTotals, type CartLineInput, type PricedLine } from '../cart'
+import { type CartLineInput, type PricedLine } from '../cart'
+import {
+  computeCartServer,
+  type CartServerTotals,
+  type CartServiceLineInput,
+  type PricedServiceLine,
+} from '../cart/services'
 import { config } from '../config'
 import { nextNumber } from '../db/counter'
 import { prisma } from '../db/prisma'
+import { applyProviderMovement } from '../db/provider-balance'
 import { applyStockMovement } from '../db/stock'
 import { isUniqueViolation } from '../db/errors'
 import { ConflictError, NotFoundError, ValidationError } from '../errors'
 import { canonicalJson } from '../idempotency'
 import { fingerprint } from '../idempotency-server'
-import { assertCashSufficient, canTransition, settlesImmediately } from '../payment'
+import { assertCashSufficient, canTransition, paysOutCash, settlesImmediately } from '../payment'
 import { providerForMethod } from '../payment/registry'
 import type { PaymentMethod, PaymentStatus } from '../enums'
+import { serviceSpec } from '../service/catalog'
 import { toBusinessDate } from '../time'
 
 /**
@@ -36,6 +44,15 @@ import { toBusinessDate } from '../time'
 
 export interface CheckoutInput {
   lines: CartLineInput[]
+  /**
+   * Baris jasa pembayaran (token listrik, PLN, top-up, tarik tunai).
+   *
+   * Boleh kosong. Boleh bercampur dengan barang — itu justru tujuannya, supaya
+   * pelanggan yang beli mie sekalian beli token cukup sekali bayar. Satu
+   * pengecualian ditegakkan di `computeCartWithServices`: tarik tunai harus
+   * berdiri sendiri, karena arah uangnya berlawanan.
+   */
+  services?: CartServiceLineInput[]
   transactionDiscount: number
   method: PaymentMethod
   /** Wajib untuk tunai. */
@@ -78,7 +95,16 @@ export interface CheckoutResult {
   /** Dibutuhkan layar kasir untuk mengonfirmasi/membatalkan pembayaran QRIS. */
   paymentId: string
   status: string
+  /** OMZET transaksi ini. Titipan jasa TIDAK ada di sini. */
   netTotal: number
+  /** Titipan, bertanda. Negatif berarti toko yang menyerahkan uang. */
+  passthroughTotal: number
+  /** Uang yang benar-benar berpindah: |netTotal + passthroughTotal|. */
+  payAmount: number
+  /** `IN` pelanggan membayar, `OUT` toko menyerahkan uang tunai. */
+  payDirection: 'IN' | 'OUT'
+  /** Saldo provider setelah transaksi ini, untuk diperlihatkan ke kasir. */
+  providerBalances: { providerId: string; providerName: string; balanceAfter: number }[]
   changeAmount: number | null
   /** Produk yang stoknya menjadi negatif setelah transaksi ini. */
   negativeStock: NegativeStockWarning[]
@@ -129,11 +155,55 @@ async function priceLines(
   })
 }
 
+/**
+ * Muat nama provider dan arah jasa dari SERVER, bukan dari client.
+ *
+ * Yang boleh ditentukan client hanya: jenis jasa, provider mana, nominal,
+ * biaya admin, dan nomor tujuan. Arah uang (`direction`) dan label datang dari
+ * katalog di kode; nama provider datang dari database. Kalau arah uang boleh
+ * dikirim client, siapa pun di LAN toko bisa mengirim tarik tunai bertanda
+ * terbalik dan menguras laci lewat satu request.
+ */
+async function priceServices(
+  tx: Prisma.TransactionClient,
+  services: CartServiceLineInput[],
+): Promise<PricedServiceLine[]> {
+  if (services.length === 0) return []
+
+  const ids = [...new Set(services.map((s) => s.providerId))]
+  const providers = await tx.serviceProvider.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, nama: true, aktif: true },
+  })
+  const byId = new Map(providers.map((p) => [p.id, p]))
+
+  return services.map((line) => {
+    const provider = byId.get(line.providerId)
+    if (!provider) throw new NotFoundError(`Provider tidak ditemukan: ${line.providerId}`)
+    if (!provider.aktif) throw new ValidationError(`Provider sudah tidak aktif: ${provider.nama}`)
+
+    const spec = serviceSpec(line.kind)
+
+    return {
+      kind: line.kind,
+      providerId: provider.id,
+      passthroughAmount: line.passthroughAmount,
+      serviceFeeAmount: line.serviceFeeAmount,
+      providerCostAmount: line.providerCostAmount ?? 0,
+      customerRef: line.customerRef,
+      note: line.note,
+      direction: spec.direction,
+      label: spec.label,
+      providerName: provider.nama,
+    }
+  })
+}
+
 export interface CreatedTransaction {
   transactionId: string
   trxNumber: string
   paymentId: string
-  totals: CartTotals
+  totals: CartServerTotals
   changeAmount: number | null
 }
 
@@ -150,8 +220,22 @@ export async function createTransactionInTx(
   now: Date = new Date(),
 ): Promise<CreatedTransaction> {
   const businessDate = toBusinessDate(now, config.timezone)
-  const priced = await priceLines(tx, input.lines)
-  const totals = computeCart(priced, input.transactionDiscount)
+  const priced = input.lines.length > 0 ? await priceLines(tx, input.lines) : []
+  const services = await priceServices(tx, input.services ?? [])
+  const totals = computeCartServer(priced, services, input.transactionDiscount)
+
+  // Arah uang ditentukan ISI keranjang, dan metode pembayaran harus mengikutinya.
+  // Tanpa pemeriksaan ini, tarik tunai yang dikirim dengan method CASH akan
+  // dicatat sebagai uang MASUK sebesar nilai mutlaknya — laci toko bertambah di
+  // atas kertas sebesar uang yang justru baru saja keluar.
+  if (totals.payDirection === 'OUT' && !paysOutCash(input.method)) {
+    throw new ValidationError(
+      'Transaksi tarik tunai harus memakai metode serah tunai, bukan pembayaran masuk',
+    )
+  }
+  if (totals.payDirection === 'IN' && paysOutCash(input.method)) {
+    throw new ValidationError('Metode serah tunai hanya untuk transaksi yang uangnya keluar')
+  }
 
   let amountTendered: number | null = null
   let changeAmount: number | null = null
@@ -160,7 +244,10 @@ export async function createTransactionInTx(
     if (input.amountTendered === undefined) {
       throw new ValidationError('Nominal uang yang diterima wajib diisi untuk pembayaran tunai')
     }
-    const cash = assertCashSufficient(totals.netTotal, input.amountTendered)
+    // Yang harus ditutup uang pelanggan adalah `payAmount` — omzet DITAMBAH
+    // titipan. Memakai netTotal di sini berarti kasir menerima Rp 2.500 untuk
+    // token Rp 100.000 dan kembaliannya dihitung dari angka yang salah.
+    const cash = assertCashSufficient(totals.payAmount, input.amountTendered)
     amountTendered = cash.amountTendered
     changeAmount = cash.changeAmount
   }
@@ -179,11 +266,29 @@ export async function createTransactionInTx(
       transactionDiscount: totals.transactionDiscount,
       netTotal: totals.netTotal,
       cogsTotal: totals.cogsTotal,
+      passthroughTotal: totals.passthroughTotal,
+      serviceFeeTotal: totals.serviceFeeTotal,
       note: input.note ?? null,
       idempotencyKey: input.idempotencyKey,
       idempotencyFingerprint: checkoutFingerprint(input),
+      services: {
+        create: services.map((s) => ({
+          kind: s.kind,
+          // SNAPSHOT: pemetaan jenis→arah dan nama provider boleh berubah besok,
+          // sejarah transaksi tidak boleh ikut berubah.
+          direction: s.direction,
+          label: s.label,
+          providerId: s.providerId,
+          providerName: s.providerName,
+          passthroughAmount: s.passthroughAmount,
+          serviceFeeAmount: s.serviceFeeAmount,
+          providerCostAmount: s.providerCostAmount,
+          customerRef: s.customerRef?.trim() || null,
+          note: s.note?.trim() || null,
+        })),
+      },
       items: {
-        create: totals.lines.map((line) => ({
+        create: (totals.goods?.lines ?? []).map((line) => ({
           productId: line.productId,
           // Snapshot: perubahan harga besok tidak boleh menulis ulang sejarah.
           productName: line.productName,
@@ -206,7 +311,9 @@ export async function createTransactionInTx(
       transactionId: transaction.id,
       method: input.method,
       status: 'PENDING',
-      amount: totals.netTotal,
+      // Uang yang benar-benar berpindah, bukan omzet. Untuk keranjang barang
+      // saja keduanya sama; untuk jasa tidak (docs/reporting.md §9).
+      amount: totals.payAmount,
       amountTendered,
       changeAmount,
       // Nama provider diambil dari registry, bukan ditulis literal, supaya
@@ -225,8 +332,16 @@ export async function createTransactionInTx(
   }
 }
 
+export interface ProviderBalanceAfter {
+  providerId: string
+  providerName: string
+  balanceAfter: number
+}
+
 export interface SettleResult {
   negativeStock: NegativeStockWarning[]
+  /** Saldo tiap provider SETELAH transaksi ini, untuk diperlihatkan ke kasir. */
+  providerBalances: ProviderBalanceAfter[]
 }
 
 /**
@@ -243,7 +358,7 @@ export async function settleTransactionInTx(
 ): Promise<SettleResult> {
   const transaction = await tx.transaction.findUnique({
     where: { id: transactionId },
-    include: { items: true, payments: true },
+    include: { items: true, services: true, payments: true },
   })
   if (!transaction) throw new NotFoundError('Transaksi tidak ditemukan')
   if (transaction.status !== 'PENDING') {
@@ -297,6 +412,33 @@ export async function settleTransactionInTx(
     }
   }
 
+  // Saldo provider bergerak DI DALAM transaction yang sama seperti stok dan
+  // status pembayaran. Satu langkah gagal, semuanya batal — mustahil ada titipan
+  // tercatat sebagai lunas tanpa saldo provider ikut berkurang.
+  const providerBalances: ProviderBalanceAfter[] = []
+
+  for (const jasa of transaction.services) {
+    const keluar = jasa.direction === 'PROVIDER_OUT'
+    const moved = await applyProviderMovement(tx, {
+      providerId: jasa.providerId,
+      // PROVIDER_OUT: toko membayarkan titipan → saldo BERKURANG.
+      // PROVIDER_IN (tarik tunai): pelanggan transfer masuk → saldo BERTAMBAH.
+      amountChange: keluar ? -jasa.passthroughAmount : jasa.passthroughAmount,
+      reason: 'SERVICE',
+      refType: 'TRANSACTION',
+      refId: transaction.id,
+      userId: actor.userId,
+      businessDate,
+      note: `${jasa.label} ${jasa.passthroughAmount}`,
+    })
+
+    providerBalances.push({
+      providerId: jasa.providerId,
+      providerName: jasa.providerName,
+      balanceAfter: moved.balanceAfter,
+    })
+  }
+
   await tx.transaction.update({
     where: { id: transaction.id },
     data: { status: 'COMPLETED', completedAt: now },
@@ -304,18 +446,24 @@ export async function settleTransactionInTx(
 
   await recordAudit(tx, actor, {
     action: 'PAYMENT_CONFIRM',
-    summary: `${transaction.trxNumber} lunas ${pending.method} ${transaction.netTotal}`,
+    summary: `${transaction.trxNumber} lunas ${pending.method} ${pending.amount}`,
     entityType: 'Transaction',
     entityId: transaction.id,
     after: {
       trxNumber: transaction.trxNumber,
       method: pending.method,
+      // Omzet dan uang yang berpindah dicatat TERPISAH. Untuk transaksi jasa
+      // keduanya berbeda jauh, dan audit log yang cuma menyebut satu di
+      // antaranya akan dibaca sebagai angka yang lain.
       netTotal: transaction.netTotal,
+      passthroughTotal: transaction.passthroughTotal,
+      paidAmount: pending.amount,
       negativeStock: negativeStock.map((n) => n.productName),
+      providerBalances: providerBalances.map((b) => `${b.providerName}: ${b.balanceAfter}`),
     },
   })
 
-  return { negativeStock }
+  return { negativeStock, providerBalances }
 }
 
 /**
@@ -336,6 +484,21 @@ function checkoutFingerprint(input: CheckoutInput): string {
   return fingerprint({
     lines: input.lines
       .map((l) => canonicalJson({ productId: l.productId, qty: l.qty, itemDiscount: l.itemDiscount }))
+      .sort(),
+    // Jasa ikut menentukan. Tanpa ini, keranjang yang barangnya sama tapi
+    // token listriknya berbeda akan menghasilkan sidik jari yang sama, dan
+    // pengulangan akan dijawab dengan struk token milik pelanggan sebelumnya.
+    services: (input.services ?? [])
+      .map((s) =>
+        canonicalJson({
+          kind: s.kind,
+          providerId: s.providerId,
+          passthroughAmount: s.passthroughAmount,
+          serviceFeeAmount: s.serviceFeeAmount,
+          providerCostAmount: s.providerCostAmount ?? 0,
+          customerRef: s.customerRef?.trim() || null,
+        }),
+      )
       .sort(),
     transactionDiscount: input.transactionDiscount,
     method: input.method,
@@ -393,12 +556,28 @@ async function readCheckoutByKey(
   })
   const nameOf = new Map(trx.items.map((i) => [i.productId, i.productName]))
 
+  // Saldo provider juga dibaca ULANG dari barisnya sendiri, bukan dari saldo
+  // sekarang: yang ingin dilihat kasir adalah keadaan saat transaksi itu
+  // terjadi, dan saldo hari ini sudah bergerak karena transaksi lain.
+  const balances = await prisma.providerBalanceMovement.findMany({
+    where: { refType: 'TRANSACTION', refId: trx.id, reason: 'SERVICE' },
+    select: { providerId: true, balanceAfter: true, provider: { select: { nama: true } } },
+  })
+
   return {
     transactionId: trx.id,
     trxNumber: trx.trxNumber,
     paymentId: payment?.id ?? '',
     status: trx.status,
     netTotal: trx.netTotal,
+    passthroughTotal: trx.passthroughTotal,
+    payAmount: payment?.amount ?? Math.abs(trx.netTotal + trx.passthroughTotal),
+    payDirection: trx.netTotal + trx.passthroughTotal < 0 ? 'OUT' : 'IN',
+    providerBalances: balances.map((b) => ({
+      providerId: b.providerId,
+      providerName: b.provider.nama,
+      balanceAfter: b.balanceAfter,
+    })),
     changeAmount: payment?.changeAmount ?? null,
     negativeStock: movements
       .filter((m) => m.stockAfter < 0)
@@ -462,6 +641,12 @@ export async function checkout(
           paymentId: created.paymentId,
           status: 'PENDING',
           netTotal: created.totals.netTotal,
+          passthroughTotal: created.totals.passthroughTotal,
+          payAmount: created.totals.payAmount,
+          payDirection: created.totals.payDirection,
+          // Belum lunas berarti saldo provider belum bergerak. Menampilkan
+          // saldo di sini akan membuat kasir mengira titipannya sudah dibayarkan.
+          providerBalances: [],
           changeAmount: null,
           negativeStock: [],
           replayed: false,
@@ -476,6 +661,10 @@ export async function checkout(
         paymentId: created.paymentId,
         status: 'COMPLETED',
         netTotal: created.totals.netTotal,
+        passthroughTotal: created.totals.passthroughTotal,
+        payAmount: created.totals.payAmount,
+        payDirection: created.totals.payDirection,
+        providerBalances: settled.providerBalances,
         changeAmount: created.changeAmount,
         negativeStock: settled.negativeStock,
         replayed: false,

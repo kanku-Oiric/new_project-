@@ -48,6 +48,34 @@ const jsonStringArray = z.string().transform((v, ctx) => {
   return arr.data
 })
 
+/**
+ * Peta jenis jasa → biaya admin bawaan.
+ *
+ * Bentuknya sama hati-hatinya dengan `jsonStringArray`: JSON.parse dibungkus
+ * `ctx.addIssue`, bukan dilempar dari dalam `.transform()`. Satu nilai aneh di
+ * sini tidak boleh membuat layar kasir gagal dibuka — dan itu persis yang
+ * pernah terjadi (BUG-03).
+ *
+ * Nilai per jenis yang tidak masuk akal disaring lagi di `feeDefaults()`, jadi
+ * skema ini cukup memastikan bentuknya objek angka.
+ */
+const jsonNumberMap = z.string().transform((v, ctx) => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(v)
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'bukan JSON yang sah' })
+    return z.NEVER
+  }
+
+  const obj = z.record(z.string(), z.number()).safeParse(parsed)
+  if (!obj.success) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'harus berupa objek angka' })
+    return z.NEVER
+  }
+  return obj.data
+})
+
 export const SETTING_DEFS = {
   storeName: { schema: z.string().min(1), default: 'Toko Saya', secret: false },
   storeAddress: { schema: z.string(), default: '', secret: false },
@@ -69,7 +97,6 @@ export const SETTING_DEFS = {
   },
 
   qrisEnabled: { schema: boolString, default: 'false', secret: false },
-  qrisImagePath: { schema: z.string(), default: '', secret: false },
 
   discordWebhookUrl: { schema: z.string(), default: '', secret: true },
   telegramBotToken: { schema: z.string(), default: '', secret: true },
@@ -110,9 +137,20 @@ export const SETTING_DEFS = {
   lowStockAlert: { schema: boolString, default: 'true', secret: false },
   expenseCategories: {
     schema: jsonStringArray,
-    default: JSON.stringify(['Operasional', 'Listrik', 'Sewa', 'Gaji', 'Lain-lain']),
+    default: JSON.stringify([
+      'Kasbon',
+      'Gaji',
+      'Listrik',
+      'Air',
+      'Transport',
+      'Operasional',
+      'Pembelian Barang',
+      'Lainnya',
+    ]),
     secret: false,
   },
+  /** Biaya admin bawaan per jenis jasa. Kosong = pakai angka di katalog. */
+  serviceFeeDefaults: { schema: jsonNumberMap, default: '{}', secret: false },
 } as const
 
 export type SettingKey = keyof typeof SETTING_DEFS
@@ -237,13 +275,13 @@ export async function updateSettings(
   }
 
   const before = await getAllSettingsRaw()
-  const merged = { ...before, ...Object.fromEntries(entries) }
 
-  if (merged.qrisEnabled === 'true' && merged.qrisImagePath.trim() === '') {
-    throw new ValidationError(
-      'Unggah gambar QR statis dulu sebelum menyalakan QRIS. Tanpa gambar, kasir tidak punya apa pun untuk ditunjukkan ke pelanggan.',
-    )
-  }
+  // Dulu di sini ada pemeriksaan silang antar-setting: "gambar QR harus ada
+  // sebelum QRIS boleh dinyalakan", yang butuh gabungan nilai lama dan baru.
+  // Syarat itu hilang bersama gambarnya — QR soundbox tertempel di meja dan
+  // tidak pernah ditampilkan di layar, jadi tidak ada berkas yang bisa
+  // diunggah maupun diperiksa. Yang menggantikannya kenyataan fisik: kalau
+  // kotaknya belum terpasang, pemiliknya tidak akan menyalakan QRIS.
 
   const changed: SettingKey[] = []
 

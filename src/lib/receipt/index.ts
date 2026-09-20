@@ -35,15 +35,28 @@ export interface ReceiptSourceItem {
   lineFinal: number
 }
 
+export interface ReceiptSourceService {
+  label: string
+  direction: string
+  providerName: string
+  passthroughAmount: number
+  serviceFeeAmount: number
+  customerRef: string | null
+}
+
 export interface ReceiptSource {
   trxNumber: string
   createdAt: Date
   cashierName: string
   items: ReceiptSourceItem[]
+  services?: ReceiptSourceService[]
   grossSubtotal: number
   itemDiscountTotal: number
   transactionDiscount: number
+  /** OMZET. Untuk transaksi jasa ini BUKAN yang dibayar pelanggan. */
   netTotal: number
+  /** BERTANDA. Titipan; negatif berarti toko yang menyerahkan uang. */
+  passthroughTotal?: number
   paymentMethod: string
   amountTendered: number | null
   changeAmount: number | null
@@ -82,6 +95,7 @@ export interface ReceiptModel {
 const METHOD_LABEL: Record<string, string> = {
   CASH: 'Tunai',
   QRIS_STATIC: 'QRIS',
+  CASH_OUT: 'Tunai diserahkan',
 }
 
 function formatDateTime(instant: Date, timeZone: string): { date: string; time: string } {
@@ -127,6 +141,28 @@ export function buildReceipt(
     }
   })
 
+  // Baris jasa dicetak dengan nominal dan biaya adminnya DIPISAH.
+  //
+  // Pelanggan yang menyerahkan Rp 102.500 untuk token Rp 100.000 harus bisa
+  // melihat ke mana Rp 2.500-nya pergi. Struk yang cuma menulis satu angka
+  // gabungan adalah sumber pertengkaran di meja kasir, dan nomor tujuannya ikut
+  // dicetak supaya pelanggan bisa memeriksa sebelum meninggalkan toko.
+  for (const jasa of source.services ?? []) {
+    const masuk = jasa.direction === 'PROVIDER_IN'
+    lines.push({
+      name: `${jasa.label} (${jasa.providerName})`,
+      qtyPrice: jasa.customerRef ? `No. ${jasa.customerRef}` : masuk ? 'Tarik tunai' : 'Titipan',
+      discountLabel:
+        jasa.serviceFeeAmount > 0
+          ? `Biaya admin ${formatRupiah(jasa.serviceFeeAmount, { bare: true })}`
+          : null,
+      amount: formatRupiah(
+        masuk ? -(jasa.passthroughAmount - jasa.serviceFeeAmount) : jasa.passthroughAmount + jasa.serviceFeeAmount,
+        { bare: true },
+      ),
+    })
+  }
+
   const totals: ReceiptTotalRow[] = [
     { label: 'Subtotal', value: formatRupiah(source.grossSubtotal, { bare: true }) },
   ]
@@ -144,7 +180,23 @@ export function buildReceipt(
     })
   }
 
-  totals.push({ label: 'TOTAL', value: formatRupiah(source.netTotal, { bare: true }), emphasis: true })
+  const passthrough = source.passthroughTotal ?? 0
+  if (passthrough !== 0) {
+    totals.push({
+      label: passthrough > 0 ? 'Titipan jasa' : 'Diserahkan ke pelanggan',
+      value: formatRupiah(passthrough, { bare: true }),
+    })
+  }
+
+  // Yang dicetak besar adalah UANG YANG BERPINDAH, bukan omzet. Untuk keranjang
+  // barang saja keduanya sama. Untuk jasa tidak, dan struk yang menuliskan omzet
+  // akan menagih pelanggan Rp 2.500 untuk token Rp 100.000.
+  const dibayar = source.netTotal + passthrough
+  totals.push({
+    label: dibayar < 0 ? 'DISERAHKAN' : 'TOTAL',
+    value: formatRupiah(Math.abs(dibayar), { bare: true }),
+    emphasis: true,
+  })
 
   if (source.amountTendered !== null) {
     totals.push({ label: 'Tunai', value: formatRupiah(source.amountTendered, { bare: true }) })

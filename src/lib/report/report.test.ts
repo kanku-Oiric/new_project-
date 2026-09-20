@@ -17,6 +17,9 @@ const TRX_FIXTURE: ReportTransactionRow = {
   transactionDiscount: 5_000,
   netTotal: 48_500,
   cogsTotal: 39_500,
+  passthroughTotal: 0,
+  serviceFeeTotal: 0,
+  services: [],
   paidMethod: 'CASH',
   items: [
     { productId: 'A', productName: 'Barang A', qty: 2, lineFinal: 27_196, unitCost: 11_000 },
@@ -142,6 +145,9 @@ describe('rincian', () => {
       itemDiscountTotal: 0,
       transactionDiscount: 0,
       cogsTotal: 6_000,
+      passthroughTotal: 0,
+      serviceFeeTotal: 0,
+      services: [],
       paidMethod: 'QRIS_STATIC',
       items: [{ productId: 'D', productName: 'Barang D', qty: 1, lineFinal: 10_000, unitCost: 6_000 }],
     }
@@ -237,5 +243,157 @@ describe('label periode', () => {
     expect(periodLabel('WEEKLY', '2026-W38')).toBe(
       'Minggu 2026-W38 · 14 September–Minggu, 20 September 2026',
     )
+  })
+})
+
+describe('jasa pembayaran dalam laporan', () => {
+  /**
+   * Token listrik Rp 100.000 dengan biaya admin Rp 2.500.
+   *
+   * Yang benar: omzet Rp 2.500. Bukan Rp 102.500, dan bukan Rp 100.000.
+   * Kalau angka ini salah, pemilik akan mengira tokonya beromzet puluhan juta
+   * sebulan dari uang yang sebenarnya cuma numpang lewat di laci.
+   */
+  const TOKEN: ReportTransactionRow = {
+    id: 'trx-jasa',
+    businessDate: '2026-09-18',
+    status: 'COMPLETED',
+    grossSubtotal: 2_500,
+    itemDiscountTotal: 0,
+    transactionDiscount: 0,
+    netTotal: 2_500,
+    cogsTotal: 0,
+    passthroughTotal: 100_000,
+    serviceFeeTotal: 2_500,
+    paidMethod: 'CASH',
+    items: [],
+    services: [
+      {
+        kind: 'TOKEN_LISTRIK',
+        label: 'Token Listrik',
+        direction: 'PROVIDER_OUT',
+        providerName: 'Shopee',
+        passthroughAmount: 100_000,
+        serviceFeeAmount: 2_500,
+        providerCostAmount: 0,
+      },
+    ],
+  }
+
+  it('titipan TIDAK masuk omzet — hanya biaya admin', () => {
+    const a = aggregateSales(input({ transactions: [TOKEN] }))
+
+    expect(a.grossSales).toBe(2_500)
+    expect(a.netSales).toBe(2_500)
+    expect(a.serviceFees).toBe(2_500)
+    expect(a.passthroughOut).toBe(100_000)
+    expect(a.passthroughIn).toBe(0)
+  })
+
+  it('biaya admin tanpa potongan provider seluruhnya jadi laba kotor', () => {
+    const a = aggregateSales(input({ transactions: [TOKEN] }))
+    expect(a.cogs).toBe(0)
+    expect(a.grossProfit).toBe(2_500)
+  })
+
+  it('potongan provider mengurangi laba kotor lewat HPP', () => {
+    // Kalau Shopee memotong Rp 1.000, laba toko 1.500 — bukan 2.500.
+    const a = aggregateSales(
+      input({
+        transactions: [
+          {
+            ...TOKEN,
+            cogsTotal: 1_000,
+            services: [{ ...TOKEN.services[0]!, providerCostAmount: 1_000 }],
+          },
+        ],
+      }),
+    )
+    expect(a.cogs).toBe(1_000)
+    expect(a.grossProfit).toBe(1_500)
+    expect(a.servicesByKind[0]?.providerCost).toBe(1_000)
+  })
+
+  it('rincian metode bayar memakai UANG YANG BERPINDAH, bukan omzet', () => {
+    // Angka ini harus bisa dicocokkan dengan hitungan fisik laci. Kalau ia
+    // memakai netTotal, angka tunai di laporan akan lebih kecil daripada uang
+    // yang benar-benar ada sebesar seluruh titipan hari itu.
+    const a = aggregateSales(input({ transactions: [TOKEN] }))
+    expect(a.byMethod[0]?.method).toBe('CASH')
+    expect(a.byMethod[0]?.amount).toBe(102_500)
+  })
+
+  it('tarik tunai dihitung sebagai titipan MASUK, omzetnya tetap positif', () => {
+    const tarik: ReportTransactionRow = {
+      ...TOKEN,
+      id: 'trx-tarik',
+      grossSubtotal: 5_000,
+      netTotal: 5_000,
+      serviceFeeTotal: 5_000,
+      passthroughTotal: -500_000,
+      paidMethod: 'CASH_OUT',
+      services: [
+        {
+          kind: 'TARIK_TUNAI',
+          label: 'Tarik Tunai',
+          direction: 'PROVIDER_IN',
+          providerName: 'BRI',
+          passthroughAmount: 500_000,
+          serviceFeeAmount: 5_000,
+          providerCostAmount: 0,
+        },
+      ],
+    }
+
+    const a = aggregateSales(input({ transactions: [tarik] }))
+    expect(a.netSales).toBe(5_000)
+    expect(a.passthroughIn).toBe(500_000)
+    expect(a.passthroughOut).toBe(0)
+    // Uang yang berpindah negatif: laci berkurang 495.000.
+    expect(a.byMethod[0]?.amount).toBe(-495_000)
+  })
+
+  it('barang dan jasa dalam satu transaksi dijumlahkan ke pos yang benar', () => {
+    const campuran: ReportTransactionRow = {
+      ...TRX_FIXTURE,
+      id: 'trx-campur',
+      grossSubtotal: TRX_FIXTURE.grossSubtotal + 2_500,
+      netTotal: TRX_FIXTURE.netTotal + 2_500,
+      passthroughTotal: 100_000,
+      serviceFeeTotal: 2_500,
+      services: TOKEN.services,
+    }
+
+    const a = aggregateSales(input({ transactions: [campuran] }))
+    expect(a.netSales).toBe(48_500 + 2_500)
+    expect(a.serviceFees).toBe(2_500)
+    expect(a.passthroughOut).toBe(100_000)
+    // Item terjual tetap hanya menghitung BARANG.
+    expect(a.itemCount).toBe(6)
+  })
+
+  it('beberapa jasa sejenis digabung per jenis', () => {
+    const a = aggregateSales(input({ transactions: [TOKEN, { ...TOKEN, id: 'trx-2' }] }))
+    expect(a.servicesByKind).toHaveLength(1)
+    expect(a.servicesByKind[0]?.count).toBe(2)
+    expect(a.servicesByKind[0]?.passthrough).toBe(200_000)
+    expect(a.servicesByKind[0]?.fee).toBe(5_000)
+    expect(a.serviceCount).toBe(2)
+  })
+
+  it('transaksi jasa yang di-VOID tidak ikut dihitung sama sekali', () => {
+    const a = aggregateSales(input({ transactions: [{ ...TOKEN, status: 'VOIDED' }] }))
+    expect(a.serviceFees).toBe(0)
+    expect(a.passthroughOut).toBe(0)
+    expect(a.serviceCount).toBe(0)
+    expect(a.voidCount).toBe(1)
+  })
+
+  it('toko yang belum memakai jasa tetap menghasilkan nol, bukan undefined', () => {
+    const a = aggregateSales(input({ transactions: [TRX_FIXTURE] }))
+    expect(a.serviceFees).toBe(0)
+    expect(a.passthroughOut).toBe(0)
+    expect(a.servicesByKind).toEqual([])
+    expect(a.providerBalances).toEqual([])
   })
 })
