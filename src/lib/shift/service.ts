@@ -2,6 +2,7 @@ import 'server-only'
 import type { Prisma } from '@prisma/client'
 import { recordAudit, type AuditActor } from '../audit'
 import { runBackup } from '../backup'
+import { canTransition } from '../payment'
 import { AUTO_CANCEL_REASON } from '../transaction/void-rules'
 import { config } from '../config'
 import { prisma } from '../db/prisma'
@@ -183,6 +184,13 @@ export async function closeShift(
     })
 
     for (const t of pending) {
+      // Lewat state machine resmi, sama seperti void. Filter `status: 'PENDING'`
+      // di bawah sudah benar sejak awal, tapi keabsahan transisinya kini
+      // DINYATAKAN, bukan tersirat dari bentuk query — supaya satu-satunya
+      // tempat yang mendefinisikan transisi sah tetap `canTransition`.
+      if (!canTransition('PENDING', 'CANCELLED')) {
+        throw new ConflictError('Transisi PENDING → CANCELLED ditolak state machine')
+      }
       await tx.payment.updateMany({
         where: { transactionId: t.id, status: 'PENDING' },
         data: { status: 'CANCELLED', failureReason: AUTO_CANCEL_REASON },

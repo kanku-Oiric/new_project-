@@ -341,14 +341,24 @@ function RefundConfirm({
         const payload = { items, method: 'CASH', reason }
         const idempotencyKey = keyFor(payload)
 
+        if (idempotencyKey === null) {
+          // Server mewajibkan kunci — lihat kasir-client.tsx untuk alasannya.
+          setBusy(false)
+          setError(
+            'Browser ini tidak bisa membuat kode pengaman transaksi, jadi refund tidak bisa diproses. ' +
+              'Gunakan browser lain di perangkat ini.',
+          )
+          return
+        }
+
         const outcome = await postJson(`/api/transactions/${transactionId}/refunds`, {
           ownerPin,
           ...payload,
-          ...(idempotencyKey ? { idempotencyKey } : {}),
+          idempotencyKey,
         })
         setBusy(false)
         if (outcome.kind !== 'ok') {
-          setError(outcomeMessage(outcome, true, idempotencyKey !== null))
+          setError(outcomeMessage(outcome, true, true))
           return
         }
         setOpen(false)

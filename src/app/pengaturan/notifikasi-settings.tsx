@@ -173,6 +173,14 @@ export function NotifikasiSettings({
           onChange={(e) => setChatId(e.target.value)}
           className="w-full rounded-lg border border-kasir-border px-3 text-sm"
         />
+        <span className="mt-1 block text-xs text-kasir-muted">
+          Isi angka (mis. <code>-1001234567890</code>) atau <code>@namachannel</code>. Untuk
+          <code>@namachannel</code>, channel harus <strong>publik</strong> dan botnya sudah
+          ditambahkan sebagai anggota — kalau tidak, Telegram menjawab{' '}
+          <code>chat not found</code> walau namanya benar. Cara termudah mendapat angkanya: kirim
+          satu pesan ke grup/channel, lalu buka{' '}
+          <code>https://api.telegram.org/bot&lt;token&gt;/getUpdates</code>.
+        </span>
       </label>
       <button
         type="button"

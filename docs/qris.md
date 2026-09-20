@@ -1,6 +1,6 @@
 # QRIS — Provider Pembayaran
 
-> Status: **Terpasang di Fase 5.** Dokumen ini menggambarkan kode yang benar-benar ada, bukan rencana. Bagian §5 (provider dinamis) tetap berupa panduan untuk nanti dan ditandai apa adanya. Pendamping `architecture.md`.
+> Status: **Terpasang di Fase 5, state machine void diperketat setelah audit integritas.** Dokumen ini menggambarkan kode yang benar-benar ada, bukan rencana. Bagian §5 (provider dinamis) tetap berupa panduan untuk nanti dan ditandai apa adanya. Pendamping `architecture.md`.
 
 ---
 
@@ -156,7 +156,8 @@ Urutan yang benar: unggah gambar → aktifkan. Ditegakkan server, bukan sekadar 
                   │
                   └──────────► FAILED     (terminal)
 
-   Tidak ada transisi keluar dari state terminal. Tidak ada pengecualian.
+   Tidak ada transisi keluar dari state terminal lewat jalur NORMAL.
+   TEPAT SATU pengecualian ada di jalur VOID — lihat §4.1.
 ```
 
 Ditegakkan **dua lapis**:
@@ -206,6 +207,64 @@ Diuji di tiga tempat, sengaja berlapis:
 `EXPIRED` dan `FAILED` ada di state machine dan diuji, tetapi **belum ada satu pun jalur di v1 yang menghasilkannya** — keduanya menunggu provider dinamis. Ditulis di sini supaya tidak ada yang mengira sistem ini punya kedaluwarsa otomatis: transaksi QRIS yang ditinggalkan tetap `PENDING` sampai dibatalkan kasir atau sampai shift ditutup.
 
 Void adalah satu-satunya jalan keluar dari `PAID`, dan ia tidak melanggar aturan terminal karena void tidak "membatalkan pembayaran" secara diam-diam — ia membatalkan seluruh transaksi sebagai satu peristiwa tercatat dengan otorisasi PIN owner, jejak audit, dan pembalikan stok.
+
+### 4.1 `PAID → CANCELLED` adalah transisi RESMI, bukan penimpaan
+
+Kalimat di atas dulu hanya benar sebagai niat. Implementasinya melanggarnya:
+
+```ts
+// SEBELUM — tidak pernah menanyakan state machine, tanpa filter status
+await tx.payment.updateMany({
+  where: { transactionId: trx.id },
+  data: { status: 'CANCELLED', failureReason: `Void: ${reason}` },
+})
+```
+
+Akibatnya dua hal. Pertama, invarian "state terminal tidak punya transisi
+keluar" ditegakkan `canTransition` untuk semua jalur **kecuali** satu-satunya
+jalur yang benar-benar melanggarnya. Kedua, pembayaran yang sudah `EXPIRED` ikut
+ditimpa menjadi `CANCELLED`, dan alasan aslinya hilang.
+
+Sekarang transisinya dinyatakan **di dalam** state machine dan dipakai lewat
+jalur resmi:
+
+```ts
+// SESUDAH — keabsahan diputuskan state machine, penulisannya dijaga database
+for (const p of trx.payments) {
+  const dari = p.status as PaymentStatus
+  if (!canTransition(dari, 'CANCELLED', 'VOID')) continue   // EXPIRED/FAILED/CANCELLED dilewati
+  const updated = await tx.payment.updateMany({
+    where: { id: p.id, status: dari },                      // guarded: status belum bergeser
+    data: { status: 'CANCELLED', failureReason: `Void: ${reason}` },
+  })
+  if (updated.count !== 1) throw new ConflictError('Pembayaran berubah di perangkat lain saat void diproses')
+}
+```
+
+`canTransition(from, to, via)` menerima konteks operasi. `via` default `NORMAL`,
+jadi setiap pemanggil lama mendapat aturan yang sama persis — pelonggaran hanya
+mungkin kalau pemanggil **menyebutkan** bahwa ia sedang melakukan void.
+
+| Transisi | NORMAL | VOID |
+|---|---|---|
+| `PENDING → PAID` | ✅ | ✅ |
+| `PENDING → CANCELLED` | ✅ | ✅ |
+| **`PAID → CANCELLED`** | ❌ | ✅ |
+| `EXPIRED → CANCELLED` | ❌ | ❌ |
+| `FAILED → CANCELLED` | ❌ | ❌ |
+| `CANCELLED → PAID` | ❌ | ❌ |
+| `PAID → PAID` | ❌ | ❌ |
+
+Yang **tidak** berubah karena void, dan sengaja begitu: `paidAt` dan
+`confirmedByUserId` tetap tersimpan. Setelah statusnya menjadi `CANCELLED`,
+keduanya adalah satu-satunya bukti tersisa bahwa uangnya pernah benar-benar
+masuk — dan dashboard kewajiban manual membacanya justru dari situ.
+
+Invarian ini dijaga dua lapis test: perilakunya di `tests/void-transition.test.ts`
+(termasuk void ganda dan void serentak), bentuk kodenya di
+`src/lib/payment/no-auto-success.test.ts` — setiap berkas yang menulis status
+pembayaran wajib menyebut `canTransition`, dan `payment.updateMany` tanpa filter
+status ditolak.
 
 ### 4.2 Transaksi terlantar
 

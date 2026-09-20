@@ -20,26 +20,78 @@ function isTerminal(status: PaymentStatus): boolean {
 }
 
 /**
+ * Operasi yang meminta transisi.
+ *
+ *   NORMAL  alur biasa: pelunasan, pembatalan, kedaluwarsa.
+ *   VOID    pembatalan SELURUH transaksi oleh pemilik, dengan PIN, audit, dan
+ *           pengembalian stok dalam satu DB transaction.
+ *
+ * Konteks ini ada karena `VOID` adalah satu-satunya operasi bisnis yang sah
+ * keluar dari `PAID`, dan keabsahan itu harus dinyatakan DI DALAM state machine —
+ * bukan dengan melewatinya. Lihat `VOID_EXCEPTION` di bawah.
+ */
+export type TransitionVia = 'NORMAL' | 'VOID'
+
+/**
+ * Satu-satunya pengecualian terhadap aturan "state terminal tidak punya transisi
+ * keluar", dan ia dinyatakan di sini supaya bisa dibaca, diuji, dan dihitung.
+ *
+ * `PAID → CANCELLED` lewat void adalah transisi bisnis yang sah:
+ *
+ *  - pelanggan mengembalikan barang di hari yang sama, sebelum shift ditutup;
+ *  - pemilik memberi PIN, jadi ada otorisasi manusia yang tercatat;
+ *  - stok dikembalikan dan seluruhnya dalam satu DB transaction;
+ *  - uang QRIS TETAP di rekening toko — void tidak menariknya kembali, dan
+ *    kewajiban mengembalikannya dilacak di dashboard (architecture.md §19).
+ *
+ * Yang TIDAK sah dan tetap ditolak: `PAID → CANCELLED` di luar void, dan seluruh
+ * transisi keluar dari `EXPIRED`, `CANCELLED`, serta `FAILED` — termasuk lewat
+ * void. Void atas transaksi yang pembayarannya sudah kedaluwarsa tidak boleh
+ * menulis ulang sejarah pembayaran itu.
+ */
+const VOID_EXCEPTION: ReadonlyArray<{ from: PaymentStatus; to: PaymentStatus }> = [
+  { from: 'PAID', to: 'CANCELLED' },
+]
+
+/**
  * Satu-satunya definisi transisi yang sah, berlaku untuk SEMUA provider —
  * tunai, QRIS statis, dan nanti Midtrans/Xendit.
  *
  *   PENDING → PAID | EXPIRED | CANCELLED | FAILED
- *   state terminal tidak punya transisi keluar, tanpa pengecualian.
+ *   state terminal tidak punya transisi keluar,
+ *   KECUALI satu pengecualian yang dinyatakan di `VOID_EXCEPTION`.
  *
  * Fungsi ini TIDAK cukup sendirian. Ia tidak bisa mencegah race: dua kasir yang
  * menekan "Pembayaran diterima" bersamaan akan sama-sama membaca PENDING dan
  * sama-sama lolos di sini. Lapis kedua ada di database, berupa guarded update
- * (`updateMany where status='PENDING'` lalu cek count === 1).
+ * (`updateMany where status=<status lama>` lalu cek count === 1).
+ *
+ * `via` default `NORMAL`, jadi seluruh pemanggil lama mendapat aturan yang sama
+ * persis seperti sebelumnya — pelonggaran hanya bisa terjadi kalau pemanggil
+ * MENYEBUTKAN bahwa ia sedang melakukan void.
  */
-export function canTransition(from: PaymentStatus, to: PaymentStatus): boolean {
+export function canTransition(
+  from: PaymentStatus,
+  to: PaymentStatus,
+  via: TransitionVia = 'NORMAL',
+): boolean {
   if (from === to) return false
-  if (isTerminal(from)) return false
+
+  if (isTerminal(from)) {
+    if (via !== 'VOID') return false
+    return VOID_EXCEPTION.some((t) => t.from === from && t.to === to)
+  }
+
   return isTerminal(to)
 }
 
-export function assertTransition(from: PaymentStatus, to: PaymentStatus): void {
-  if (!canTransition(from, to)) {
-    throw new PaymentError(`transisi pembayaran tidak sah: ${from} → ${to}`)
+export function assertTransition(
+  from: PaymentStatus,
+  to: PaymentStatus,
+  via: TransitionVia = 'NORMAL',
+): void {
+  if (!canTransition(from, to, via)) {
+    throw new PaymentError(`transisi pembayaran tidak sah: ${from} → ${to} (via ${via})`)
   }
 }
 

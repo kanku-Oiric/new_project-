@@ -44,11 +44,12 @@ export interface CheckoutInput {
   /**
    * Kunci sekali-pakai dari layar kasir (lihat src/lib/idempotency.ts).
    *
-   * Opsional supaya endpoint tetap bisa dipakai tanpa kunci — tapi tanpa kunci,
-   * pengulangan karena response hilang akan membuat transaksi kedua. Layar kasir
-   * selalu mengirimkannya.
+   * WAJIB. Dulu opsional, dan itu berarti perlindungan terhadap pengulangan
+   * bergantung pada kedisiplinan client: bundel JS lama yang masih ter-cache di
+   * HP kasir, client yang dimodifikasi, atau `curl` mendapat perilaku lama
+   * secara senyap — dan sistem tidak pernah tahu perlindungannya tidak aktif.
    */
-  idempotencyKey?: string
+  idempotencyKey: string
 }
 
 /**
@@ -179,8 +180,8 @@ export async function createTransactionInTx(
       netTotal: totals.netTotal,
       cogsTotal: totals.cogsTotal,
       note: input.note ?? null,
-      idempotencyKey: input.idempotencyKey ?? null,
-      idempotencyFingerprint: input.idempotencyKey ? checkoutFingerprint(input) : null,
+      idempotencyKey: input.idempotencyKey,
+      idempotencyFingerprint: checkoutFingerprint(input),
       items: {
         create: totals.lines.map((line) => ({
           productId: line.productId,
@@ -435,16 +436,20 @@ export async function checkout(
     )
   }
 
-  const key = input.idempotencyKey ?? null
-  const print = key ? checkoutFingerprint(input) : ''
+  // Lapis kedua penegakan, setelah Zod di route. Service ini dipanggil juga dari
+  // kode lain nanti (webhook provider dinamis, misalnya), dan invariannya tidak
+  // boleh bergantung pada satu route saja.
+  const key = input.idempotencyKey
+  if (typeof key !== 'string' || key.trim() === '') {
+    throw new ValidationError('idempotencyKey wajib diisi untuk membuat transaksi')
+  }
+  const print = checkoutFingerprint(input)
 
   // Jalur cepat: pengulangan yang kuncinya sudah tercatat tidak menyentuh logika
   // checkout sama sekali, jadi tidak ada nomor transaksi yang terbakar dan tidak
   // ada stok yang bergerak dua kali.
-  if (key) {
-    const replayed = await readCheckoutByKey(key, print, actor)
-    if (replayed) return replayed
-  }
+  const replayed = await readCheckoutByKey(key, print, actor)
+  if (replayed) return replayed
 
   try {
     return await prisma.$transaction(async (tx) => {
@@ -483,7 +488,7 @@ export async function checkout(
     //
     // Kalau P2002-nya datang dari kolom lain (misalnya trxNumber yang bentrok),
     // pembacaan ini mengembalikan null dan errornya diteruskan apa adanya.
-    if (key && isUniqueViolation(e)) {
+    if (isUniqueViolation(e)) {
       const replayed = await readCheckoutByKey(key, print, actor)
       if (replayed) return replayed
     }

@@ -124,3 +124,54 @@ describe('tidak ada jalur otomatis menuju PAID', () => {
     expect(settle).toMatch(/updated\.count\s*!==\s*1/)
   })
 })
+
+describe('tidak ada mutasi status pembayaran yang melewati state machine', () => {
+  /**
+   * Temuan audit: `voidTransaction` menjalankan
+   *
+   *   tx.payment.updateMany({ where: { transactionId }, data: { status: 'CANCELLED' } })
+   *
+   * tanpa filter status dan tanpa pernah menanyakan `canTransition`. Invarian
+   * "state terminal tidak punya transisi keluar" karena itu ditegakkan di semua
+   * jalur KECUALI satu-satunya jalur yang melanggarnya.
+   *
+   * Penjaga ini bukan pengganti test perilaku (tests/void-transition.test.ts) —
+   * ia menutup jalan masuk berikutnya: berkas baru yang mengubah status
+   * pembayaran tanpa melewati state machine.
+   */
+  it('setiap berkas yang menulis status pembayaran memakai canTransition', () => {
+    const pelanggar: string[] = []
+
+    for (const { file, text } of sourceFiles('src')) {
+      const bersih = stripComments(text)
+      // Menulis status pembayaran = memanggil payment.update/updateMany DAN
+      // menyebut `status:` di dalamnya.
+      const menulisStatusPembayaran =
+        /\bpayment\.update(Many)?\s*\(/.test(bersih) && /status:\s*'[A-Z]+'/.test(bersih)
+      if (!menulisStatusPembayaran) continue
+
+      if (!bersih.includes('canTransition')) pelanggar.push(file)
+    }
+
+    expect(pelanggar).toEqual([])
+  })
+
+  it('void TIDAK memakai updateMany tanpa filter status', () => {
+    // Bentuk persis yang dulu ada. Kalau ia kembali, test ini merah.
+    const isi = stripComments(
+      fs.readFileSync(path.join(ROOT, 'src/lib/transaction/service.ts'), 'utf8'),
+    )
+
+    // Setiap payment.updateMany di berkas ini harus menyebut `status` di where-nya.
+    const panggilan = [...isi.matchAll(/payment\.updateMany\s*\(\s*\{([\s\S]{0,200}?)\}\s*\)/g)]
+    expect(panggilan.length).toBeGreaterThan(0)
+
+    for (const m of panggilan) {
+      const badan = m[1] ?? ''
+      const where = /where:\s*\{([^}]*)\}/.exec(badan)?.[1] ?? ''
+      expect(where, `updateMany tanpa filter status: ${badan.trim().slice(0, 80)}`).toContain(
+        'status',
+      )
+    }
+  })
+})

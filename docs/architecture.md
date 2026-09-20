@@ -923,6 +923,98 @@ Ditulis di sini supaya tidak ada yang mengira sudah selesai:
 
 ---
 
+## 19a. Invarian yang ditegakkan server
+
+Dua invarian di bawah ditegakkan **di server**, bukan oleh kedisiplinan client.
+Keduanya lahir dari audit yang membuktikan lubangnya lebih dulu — bukan dari
+kekhawatiran.
+
+### 19a.1 Invarian idempotency
+
+> Operasi yang punya efek finansial atau inventori WAJIB membawa idempotency key
+> yang diwajibkan server. Client tidak boleh menjadi satu-satunya lapisan
+> penegakan.
+
+| Endpoint | Kunci | Ditegakkan di |
+|---|---|---|
+| `POST /api/transactions` | **wajib** | Zod di route + `checkout()` melempar `ValidationError` |
+| `POST /api/transactions/:id/refunds` | **wajib** | Zod di route + `createRefund()` melempar `ValidationError` |
+| `POST /api/expenses` | **belum** | — lihat §19a.3 |
+| `POST /api/products/:id/stock-in` | **belum** | — lihat §19a.3 |
+| `POST /api/products/:id/stock-adjustment` | **belum** | — lihat §19a.3 |
+
+Perilaku yang dijamin, seluruhnya diuji di `tests/idempotency.test.ts`:
+
+| Keadaan | Jawaban | Efek samping |
+|---|---|---|
+| Tanpa kunci | `400` | **nol** — tidak ada transaksi, stok, maupun kas yang berubah |
+| Kunci bentuknya bukan UUID | `400` | nol |
+| Kunci baru | `201` | tepat satu kali |
+| Kunci sama + payload sama | `200`, `replayed: true` | tidak ada efek kedua |
+| Kunci sama + payload berbeda | `409` | nol — **tidak** dijawab dengan hasil operasi pertama |
+| Kunci sama milik kasir lain | `409` | nol |
+| Kunci berbeda + payload sama | `201` dua kali | dua operasi, memang dua penjualan |
+| Dua request serentak, kunci sama | keduanya `200`/`201`, nomor sama | tepat satu |
+
+Validasi kunci terjadi **sebelum** pemeriksaan bisnis apa pun. Request tanpa
+kunci dijawab `400 kunci wajib`, bukan `409 belum ada shift` — dua pesan itu
+menuntun kasir ke dua tindakan yang berbeda.
+
+Penyimpanan kuncinya menempel pada baris entitasnya sendiri
+(`transactions.idempotencyKey`, `refunds.idempotencyKey`), nullable + `@unique`.
+Tidak ada tabel idempotency terpisah, dan tidak ada masa kedaluwarsa: kunci
+hidup selama barisnya hidup.
+
+### 19a.2 Invarian state machine pembayaran
+
+> Perubahan status pembayaran hanya boleh terjadi lewat `canTransition`, dan
+> setiap penulisan harus dijaga di database dengan `where: { status: <lama> }`.
+
+State final: `PAID`, `EXPIRED`, `CANCELLED`, `FAILED`.
+
+Transisi sah lewat jalur **NORMAL** — empat, semuanya dari `PENDING`:
+
+```
+PENDING ──► PAID | EXPIRED | CANCELLED | FAILED
+```
+
+Satu-satunya pengecualian, lewat jalur **VOID**:
+
+```
+PAID ──► CANCELLED        (hanya via: 'VOID')
+```
+
+`PAID → CANCELLED` adalah transisi bisnis yang sah: pelanggan mengembalikan
+barang di hari yang sama, pemilik memberi PIN, stok kembali, semuanya dalam satu
+DB transaction. Yang TIDAK ikut berubah: uang QRIS tetap di rekening toko, dan
+kewajiban mengembalikannya dilacak di dashboard (§19).
+
+Yang tetap ditolak bahkan lewat void: `EXPIRED → CANCELLED`, `FAILED → CANCELLED`,
+dan seluruh transisi keluar dari `CANCELLED`. Void tidak boleh menulis ulang
+sejarah pembayaran yang sudah selesai dengan cara lain.
+
+Sebelum perbaikan ini, `voidTransaction` menjalankan
+`payment.updateMany({ where: { transactionId } })` tanpa filter status dan tanpa
+pernah memanggil `canTransition` — sehingga invarian ditegakkan di semua jalur
+KECUALI satu-satunya jalur yang melanggarnya, dan pembayaran `EXPIRED` ikut
+ditimpa menjadi `CANCELLED`. Ditutup oleh `tests/void-transition.test.ts` dan
+dijaga bentuknya oleh `src/lib/payment/no-auto-success.test.ts`.
+
+### 19a.3 Yang BELUM ditutup, dan kenapa
+
+`POST /api/expenses`, `POST /api/products/:id/stock-in`, dan
+`POST /api/products/:id/stock-adjustment` (mode `qtyChange`) masih bisa
+menggandakan efeknya kalau request diulang.
+
+Penyebabnya bukan kelalaian desain, melainkan penyimpanan: `Expense` dan
+`StockMovement` **tidak punya satu pun kolom `@unique`** yang bisa menampung
+kunci, jadi menutupnya menuntut migrasi schema plus `prisma generate`.
+Regenerasi client membuat proses server yang sedang berjalan memakai client lama
+terhadap kode baru. Pekerjaannya ditunda sampai ada jendela restart, bukan
+dikerjakan diam-diam.
+
+---
+
 ## 20. Kunci sekali-pakai (idempotency)
 
 Masalahnya bukan offline, dan bukan pula dua sumber kebenaran. Ia terjadi di dalam arsitektur ini, hari ini:

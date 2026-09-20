@@ -234,9 +234,21 @@ export function KasirClient({
       // diskon, metode, atau uang yang diserahkan berubah.
       const idempotencyKey = keyFor(payload)
 
+      if (idempotencyKey === null) {
+        // Server MEWAJIBKAN kunci. Mengirim tanpa kunci hanya menghasilkan 400
+        // dengan pesan teknis; lebih jujur mengatakan sebabnya di sini. Terjadi
+        // kalau browser tidak punya crypto.getRandomValues sama sekali.
+        setPayError(
+          'Browser ini tidak bisa membuat kode pengaman transaksi, jadi penjualan tidak bisa diproses. ' +
+            'Gunakan browser lain (Chrome/Firefox versi baru) di perangkat ini.',
+        )
+        setBusy(false)
+        return
+      }
+
       const outcome = await postJson<CheckoutResponse>('/api/transactions', {
         ...payload,
-        ...(idempotencyKey ? { idempotencyKey } : {}),
+        idempotencyKey,
       })
 
       if (outcome.kind !== 'ok') {
@@ -247,7 +259,7 @@ export function KasirClient({
         // penjualan kedua — jadi kasir disuruh mengulang, bukan disuruh
         // memeriksa riwayat satu per satu. Tanpa kunci (browser tanpa sumber
         // acak), peringatan lamanya yang berlaku.
-        setPayError(outcomeMessage(outcome, true, idempotencyKey !== null))
+        setPayError(outcomeMessage(outcome, true, true))
         setBusy(false)
         return
       }

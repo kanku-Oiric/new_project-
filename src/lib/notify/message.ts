@@ -141,7 +141,15 @@ export function buildReportMessage(
         }`
         const selisih =
           s.difference === null ? 'belum dihitung' : `selisih ${formatRupiah(s.difference)}`
-        return row(s.cashierName, `${jam} · ${selisih}`)
+
+        // Tanggal ikut di label untuk laporan mingguan/bulanan.
+        //
+        // Dulu labelnya hanya nama kasir. Kasir yang bekerja tiga hari dalam
+        // sepekan menghasilkan TIGA baris berjudul "Kasir Budi" — pembaca tidak
+        // bisa tahu baris mana hari mana, dan React melaporkan duplicate key
+        // karena label dipakai sebagai identitas baris.
+        const label = meta.kind === 'DAILY' ? s.cashierName : `${s.cashierName} · ${s.businessDate}`
+        return row(label, `${jam} · ${selisih}`)
       }),
     })
   }

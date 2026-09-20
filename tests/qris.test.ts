@@ -115,6 +115,14 @@ beforeEach(async () => {
   productId = product.id
 })
 
+let urutanKunci = 0
+/** UUID v4 uji yang selalu berbeda. */
+function kunciBaru(): string {
+  urutanKunci += 1
+  const n = String(urutanKunci).padStart(12, '0')
+  return `33333333-3333-4333-8333-${n}`
+}
+
 function actor(): CheckoutActor {
   return { userId: cashierId, shiftId, role: 'CASHIER' }
 }
@@ -128,6 +136,9 @@ async function createQrisTransaction(): Promise<{ transactionId: string; payment
         lines: [{ productId, qty: QTY, itemDiscount: 0 }],
         transactionDiscount: 0,
         method: 'QRIS_STATIC',
+        // Kunci unik per pemanggilan: kolomnya @unique, dan dua transaksi uji
+        // dengan kunci sama memang HARUS bertabrakan.
+        idempotencyKey: kunciBaru(),
       },
       actor(),
     ),

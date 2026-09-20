@@ -233,6 +233,10 @@ describe('POST /api/transactions lewat HTTP', () => {
         transactionDiscount: 0,
         method: 'CASH',
         amountTendered: 10_000,
+        // Kunci diisi supaya yang diuji tetap ATURAN SHIFT. Tanpa kunci,
+        // requestnya berhenti lebih awal di 400 dan test ini berubah diam-diam
+        // menjadi test tentang hal lain.
+        idempotencyKey: 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaa1',
       }),
     })
     expect(res.status).toBe(409)
@@ -258,6 +262,7 @@ describe('POST /api/transactions lewat HTTP', () => {
         transactionDiscount: 1_000,
         method: 'CASH',
         amountTendered: 20_000,
+        idempotencyKey: 'aaaaaaaa-2222-4222-8222-aaaaaaaaaaa2',
       }),
     })
 

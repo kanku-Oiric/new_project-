@@ -74,6 +74,37 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   throw new Error(`server tidak siap dalam ${timeoutMs}ms: ${lastError}`)
 }
 
+const PREFIX_KUNCI = '66666666-6666-4666-8666'
+
+/**
+ * Kunci sekali-pakai untuk request uji.
+ *
+ * `idempotencyKey` sekarang WAJIB di `/api/transactions` dan `/refunds`. Test di
+ * berkas ini menguji alur bisnis, bukan aturan kuncinya, jadi kuncinya diisi
+ * otomatis di sini — kecuali kalau test-nya menyebutkan sendiri.
+ *
+ * Aturan kuncinya sendiri diuji terpisah dan menyeluruh di
+ * `tests/idempotency.test.ts` (tanpa kunci, kunci sama, kunci beda, payload
+ * bentrok, serentak).
+ */
+let urutanKunciUji = 0
+function kunciUji(): string {
+  urutanKunciUji += 1
+  return `${PREFIX_KUNCI}-${String(urutanKunciUji).padStart(12, '0')}`
+}
+
+/** Endpoint yang mewajibkan kunci. */
+function butuhKunci(pathname: string): boolean {
+  return pathname === '/api/transactions' || pathname.endsWith('/refunds')
+}
+
+function denganKunci(pathname: string, body: unknown): unknown {
+  if (!butuhKunci(pathname) || typeof body !== 'object' || body === null) return body
+  const isi = body as Record<string, unknown>
+  if ('idempotencyKey' in isi) return isi
+  return { ...isi, idempotencyKey: kunciUji() }
+}
+
 async function api(
   method: string,
   pathname: string,
@@ -86,7 +117,7 @@ async function api(
       'Content-Type': 'application/json',
       ...(cookie ? { Cookie: cookie } : {}),
     },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(body === undefined ? {} : { body: JSON.stringify(denganKunci(pathname, body)) }),
   })
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
   return { status: res.status, data }

@@ -118,11 +118,36 @@ function actorFor(): CheckoutActor {
   return { userId: cashierId, shiftId, role: 'CASHIER' }
 }
 
+let urutanKunci = 0
+/**
+ * UUID v4 uji yang selalu berbeda.
+ *
+ * `idempotencyKey` sekarang WAJIB pada `CheckoutInput`, dan kolomnya `@unique`.
+ * Test di berkas ini menguji hal lain (race stok, rollback, pembulatan), jadi
+ * kuncinya diisi otomatis — kecuali kalau test-nya memang ingin menentukan
+ * sendiri, misalnya untuk menguji tabrakan.
+ */
+function kunciBaru(): string {
+  urutanKunci += 1
+  return `44444444-4444-4444-8444-${String(urutanKunci).padStart(12, '0')}`
+}
+
+/**
+ * Isi keranjang tanpa kunci. Kuncinya diisi `runCheckout` per PEMANGGILAN,
+ * bukan per objek — dua checkout bersamaan dalam test race adalah dua penjualan
+ * berbeda (dua pelanggan), jadi keduanya memang harus punya kunci berbeda.
+ */
+type CheckoutFixture = Omit<CheckoutInput, 'idempotencyKey'> & { idempotencyKey?: string }
+
 /** Checkout lengkap memakai client test (bukan singleton aplikasi). */
-async function runCheckout(input: CheckoutInput, now = new Date('2026-09-19T03:00:00Z')) {
+async function runCheckout(input: CheckoutFixture, now = new Date('2026-09-19T03:00:00Z')) {
+  const lengkap: CheckoutInput = {
+    ...input,
+    idempotencyKey: input.idempotencyKey ?? kunciBaru(),
+  }
   return prisma.$transaction(async (tx) => {
-    const created = await createTransactionInTx(tx, input, actorFor(), now)
-    if (input.method === 'CASH') {
+    const created = await createTransactionInTx(tx, lengkap, actorFor(), now)
+    if (lengkap.method === 'CASH') {
       await settleTransactionInTx(tx, created.transactionId, actorFor(), now)
     }
     return created
@@ -136,7 +161,7 @@ describe('race: dua checkout bersamaan atas produk yang sama', () => {
     const product = await makeProduct({ sku: 'RACE-1', hargaJual: 10_000, hargaBeli: 7_000, stok: 10 })
 
     const line = { productId: product.id, qty: 1, itemDiscount: 0 }
-    const input: CheckoutInput = {
+    const input: CheckoutFixture = {
       lines: [line],
       transactionDiscount: 0,
       method: 'CASH',
@@ -178,7 +203,7 @@ describe('race: dua checkout bersamaan atas produk yang sama', () => {
 
   it('lima checkout bersamaan mengurangi stok tepat lima', async () => {
     const product = await makeProduct({ sku: 'RACE-5', hargaJual: 5_000, hargaBeli: 3_000, stok: 20 })
-    const input: CheckoutInput = {
+    const input: CheckoutFixture = {
       lines: [{ productId: product.id, qty: 2, itemDiscount: 0 }],
       transactionDiscount: 0,
       method: 'CASH',
@@ -200,7 +225,7 @@ describe('race: dua checkout bersamaan atas produk yang sama', () => {
 
   it('nomor transaksi bersamaan tidak pernah bentrok', async () => {
     const product = await makeProduct({ sku: 'RACE-N', hargaJual: 1_000, hargaBeli: 500, stok: 100 })
-    const input: CheckoutInput = {
+    const input: CheckoutFixture = {
       lines: [{ productId: product.id, qty: 1, itemDiscount: 0 }],
       transactionDiscount: 0,
       method: 'CASH',
@@ -232,6 +257,7 @@ describe('rollback: satu langkah gagal di tengah checkout', () => {
           {
             lines: [{ productId: product.id, qty: 2, itemDiscount: 0 }],
             transactionDiscount: 0,
+            idempotencyKey: kunciBaru(),
             method: 'CASH',
             amountTendered: 20_000,
           },
@@ -263,6 +289,7 @@ describe('rollback: satu langkah gagal di tengah checkout', () => {
           {
             lines: [{ productId: product.id, qty: 3, itemDiscount: 0 }],
             transactionDiscount: 0,
+            idempotencyKey: kunciBaru(),
             method: 'CASH',
             amountTendered: 30_000,
           },
@@ -425,6 +452,7 @@ describe('stok minus diizinkan tapi tidak diam-diam', () => {
         {
           lines: [{ productId: p.id, qty: 3, itemDiscount: 0 }],
           transactionDiscount: 0,
+          idempotencyKey: kunciBaru(),
           method: 'CASH',
           amountTendered: 100_000,
         },
@@ -455,6 +483,7 @@ describe('QRIS statis tidak pernah lunas sendiri', () => {
       lines: [{ productId: p.id, qty: 2, itemDiscount: 0 }],
       transactionDiscount: 0,
       method: 'QRIS_STATIC',
+      idempotencyKey: '11111111-1111-4111-8111-111111111111',
     })
 
     const trx = await prisma.transaction.findUniqueOrThrow({
@@ -478,6 +507,7 @@ describe('QRIS statis tidak pernah lunas sendiri', () => {
       lines: [{ productId: p.id, qty: 2, itemDiscount: 0 }],
       transactionDiscount: 0,
       method: 'QRIS_STATIC',
+      idempotencyKey: '22222222-2222-4222-8222-222222222222',
     })
 
     await prisma.$transaction(async (tx) => {

@@ -286,9 +286,34 @@ describe('kunci sekali-pakai pada checkout', () => {
     expect(await stok()).toBe(STOK_AWAL - 2)
   }, 120_000)
 
-  it('4. TANPA kunci, dua request identik membuat dua transaksi', async () => {
-    // Bukan sekadar pelengkap: ini yang membuktikan bahwa perlindungan di test 2
-    // datang dari kuncinya, bukan dari hal lain yang kebetulan menahannya.
+  it('4. Case A - TANPA kunci: DITOLAK 400, tanpa efek samping apa pun', async () => {
+    // Berkas ini dulu memuat test berjudul "TANPA kunci, dua request identik
+    // membuat dua transaksi" - dan test itu LULUS, karena kuncinya opsional.
+    // Audit menyebutnya lubang: perlindungan bergantung pada kedisiplinan client.
+    // Test yang sama kini dibalik menjadi bukti bahwa lubang itu tertutup.
+    const trxSebelum = await prisma.transaction.count()
+    const stokSebelum = await stok()
+
+    const tanpaKunci = {
+      lines: [{ productId, qty: 1, itemDiscount: 0 }],
+      transactionDiscount: 0,
+      method: 'CASH' as const,
+      amountTendered: 20_000,
+    }
+
+    const res = await api('POST', '/api/transactions', tanpaKunci)
+
+    expect(res.status).toBe(400)
+    // Bukan cuma status HTTP - database yang menentukan.
+    expect(await prisma.transaction.count()).toBe(trxSebelum)
+    expect(await stok()).toBe(stokSebelum)
+  }, 120_000)
+
+  it('4b. Case D - DUA request identik tanpa kunci: keduanya ditolak, nol transaksi', async () => {
+    const trxSebelum = await prisma.transaction.count()
+    const stokSebelum = await stok()
+    const movementSebelum = await prisma.stockMovement.count()
+
     const tanpaKunci = {
       lines: [{ productId, qty: 1, itemDiscount: 0 }],
       transactionDiscount: 0,
@@ -299,11 +324,73 @@ describe('kunci sekali-pakai pada checkout', () => {
     const a = await api('POST', '/api/transactions', tanpaKunci)
     const b = await api('POST', '/api/transactions', tanpaKunci)
 
+    expect(a.status).toBe(400)
+    expect(b.status).toBe(400)
+    expect(await prisma.transaction.count()).toBe(trxSebelum)
+    expect(await stok()).toBe(stokSebelum)
+    expect(await prisma.stockMovement.count()).toBe(movementSebelum)
+  }, 120_000)
+
+  it('4c. Case E - kunci BERBEDA dengan payload sama: dua penjualan sah', async () => {
+    // Penjagaan tidak boleh berubah menjadi deduplikasi tak sengaja. Dua
+    // pelanggan membeli barang yang sama dengan jumlah yang sama adalah dua
+    // penjualan, dan sistem harus mengizinkannya.
+    const trxSebelum = await prisma.transaction.count()
+    const stokSebelum = await stok()
+
+    const isi = {
+      lines: [{ productId, qty: 1, itemDiscount: 0 }],
+      transactionDiscount: 0,
+      method: 'CASH' as const,
+      amountTendered: 20_000,
+    }
+
+    const a = await api('POST', '/api/transactions', { ...isi, idempotencyKey: key('e1e1e1e1') })
+    const b = await api('POST', '/api/transactions', { ...isi, idempotencyKey: key('e2e2e2e2') })
+
     expect(a.status).toBe(201)
     expect(b.status).toBe(201)
     expect(a.data.trxNumber).not.toBe(b.data.trxNumber)
-    expect(await prisma.transaction.count()).toBe(3)
-    expect(await stok()).toBe(STOK_AWAL - 2 - 1 - 1)
+    expect(await prisma.transaction.count()).toBe(trxSebelum + 2)
+    expect(await stok()).toBe(stokSebelum - 2)
+  }, 120_000)
+
+  it('4d. kunci berbentuk salah ditolak 400 tanpa menyentuh apa pun', async () => {
+    const trxSebelum = await prisma.transaction.count()
+    const res = await api('POST', '/api/transactions', {
+      lines: [{ productId, qty: 1, itemDiscount: 0 }],
+      transactionDiscount: 0,
+      method: 'CASH',
+      amountTendered: 20_000,
+      idempotencyKey: 'bukan-uuid',
+    })
+    expect(res.status).toBe(400)
+    expect(await prisma.transaction.count()).toBe(trxSebelum)
+  }, 120_000)
+
+  it('4e. kunci divalidasi SEBELUM aturan bisnis lain (tanpa shift terbuka)', async () => {
+    // Urutan penolakan menentukan tindakan kasir. Request tanpa kunci harus
+    // dijawab 400 "kunci wajib", bukan 409 "belum ada shift" - dua pesan itu
+    // menuntun ke dua tindakan yang sangat berbeda.
+    const shift = await prisma.shift.findFirstOrThrow({ where: { status: 'OPEN' } })
+
+    await prisma.shift.update({
+      where: { id: shift.id },
+      data: { status: 'CLOSED', openKey: null, closedAt: new Date() },
+    })
+
+    const res = await api('POST', '/api/transactions', {
+      lines: [{ productId, qty: 1, itemDiscount: 0 }],
+      transactionDiscount: 0,
+      method: 'CASH',
+      amountTendered: 20_000,
+    })
+    expect(res.status).toBe(400)
+
+    await prisma.shift.update({
+      where: { id: shift.id },
+      data: { status: 'OPEN', openKey: shift.cashierId, closedAt: null },
+    })
   }, 120_000)
 
   it('5. dua request SERENTAK dengan kunci sama: tepat satu transaksi', async () => {
@@ -389,6 +476,7 @@ describe('kunci sekali-pakai pada refund', () => {
       transactionDiscount: 0,
       method: 'CASH',
       amountTendered: 100_000,
+      idempotencyKey: key('aaaa9999'),
     })
     expect(res.status).toBe(201)
     transactionId = String(res.data.transactionId)
@@ -436,15 +524,44 @@ describe('kunci sekali-pakai pada refund', () => {
     expect(await stok()).toBe(stokSebelum)
   }, 120_000)
 
-  it('11. TANPA kunci, refund sebagian yang sama benar-benar terjadi dua kali', async () => {
+  it('11. Case A/D refund - TANPA kunci: ditolak, tidak ada uang keluar', async () => {
+    // Dibalik dari test lama yang membuktikan refund sebagian bisa terjadi dua
+    // kali tanpa kunci.
     const item = await prisma.transactionItem.findUniqueOrThrow({ where: { id: itemId } })
     const sebelum = item.refundedQty
+    const refundSebelum = await prisma.refund.count({ where: { transactionId } })
+
+    const tanpaKunci = {
+      ownerPin: OWNER_PIN,
+      items: [{ transactionItemId: itemId, qty: 1 }],
+      method: 'CASH',
+      reason: 'Barang rusak',
+    }
+
+    const a = await api('POST', `/api/transactions/${transactionId}/refunds`, tanpaKunci)
+    const b = await api('POST', `/api/transactions/${transactionId}/refunds`, tanpaKunci)
+
+    expect(a.status).toBe(400)
+    expect(b.status).toBe(400)
+
+    const sesudah = await prisma.transactionItem.findUniqueOrThrow({ where: { id: itemId } })
+    expect(sesudah.refundedQty).toBe(sebelum)
+    expect(await prisma.refund.count({ where: { transactionId } })).toBe(refundSebelum)
+  }, 120_000)
+
+  it('11b. Case E refund - kunci berbeda memang menghasilkan refund kedua', async () => {
+    // Refund sebagian dua kali adalah operasi SAH selama sisa qty cukup.
+    // Idempotency tidak boleh melarangnya.
+    const item = await prisma.transactionItem.findUniqueOrThrow({ where: { id: itemId } })
+    const sebelum = item.refundedQty
+    expect(item.qty - sebelum).toBeGreaterThan(0)
 
     const res = await api('POST', `/api/transactions/${transactionId}/refunds`, {
       ownerPin: OWNER_PIN,
       items: [{ transactionItemId: itemId, qty: 1 }],
       method: 'CASH',
       reason: 'Barang rusak',
+      idempotencyKey: key('bbbb1111'),
     })
     expect(res.status).toBe(201)
 

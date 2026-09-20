@@ -5,7 +5,7 @@ import { prisma } from '../db/prisma'
 import { applyStockMovement } from '../db/stock'
 import { nextNumber } from '../db/counter'
 import { isUniqueViolation } from '../db/errors'
-import { ConflictError, NotFoundError } from '../errors'
+import { ConflictError, NotFoundError, ValidationError } from '../errors'
 import { canonicalJson } from '../idempotency'
 import { fingerprint } from '../idempotency-server'
 import {
@@ -15,6 +15,7 @@ import {
 } from '../refund'
 import { RefundMethodSchema, type PaymentMethod, type PaymentStatus, type RefundMethod, type ShiftStatus, type TransactionStatus } from '../enums'
 import { toBusinessDate } from '../time'
+import { canTransition } from '../payment'
 import { checkVoidEligibility, voidNeedsManualRefund } from './void-rules'
 
 /**
@@ -130,10 +131,34 @@ export async function voidTransaction(
       restoredItems.push({ productName: item.productName, qty: item.qty })
     }
 
-    await tx.payment.updateMany({
-      where: { transactionId: trx.id },
-      data: { status: 'CANCELLED', failureReason: `Void: ${reason}` },
-    })
+    // Pembatalan pembayaran lewat STATE MACHINE RESMI, bukan penimpaan langsung.
+    //
+    // Dulu baris ini `updateMany({ where: { transactionId } })` tanpa filter
+    // status: ia menimpa SEMUA pembayaran menjadi CANCELLED, termasuk yang sudah
+    // PAID, tanpa pernah menanyakan apakah transisi itu sah. Akibatnya invarian
+    // "state terminal tidak punya transisi keluar" ditegakkan `canTransition`
+    // untuk semua jalur KECUALI jalur yang benar-benar melanggarnya.
+    //
+    // Sekarang: `canTransition(..., 'VOID')` yang memutuskan baris mana boleh
+    // berubah, lalu guarded update memastikan statusnya belum bergeser di
+    // perangkat lain — pola dua lapis yang sama dengan pelunasan (§9.1).
+    for (const p of trx.payments) {
+      const dari = p.status as PaymentStatus
+      if (!canTransition(dari, 'CANCELLED', 'VOID')) {
+        // Sudah CANCELLED, EXPIRED, atau FAILED. Dibiarkan apa adanya: void
+        // tidak boleh menulis ulang sejarah pembayaran yang sudah selesai
+        // dengan cara lain.
+        continue
+      }
+
+      const updated = await tx.payment.updateMany({
+        where: { id: p.id, status: dari },
+        data: { status: 'CANCELLED', failureReason: `Void: ${reason}` },
+      })
+      if (updated.count !== 1) {
+        throw new ConflictError('Pembayaran berubah di perangkat lain saat void diproses')
+      }
+    }
 
     await tx.transaction.update({
       where: { id: trx.id },
@@ -213,6 +238,7 @@ function refundFingerprint(
 async function readRefundByKey(
   key: string,
   expectedFingerprint: string,
+  actorUserId: string,
 ): Promise<RefundResult | null> {
   const refund = await prisma.refund.findUnique({ where: { idempotencyKey: key } })
   if (!refund) return null
@@ -221,6 +247,12 @@ async function readRefundByKey(
     throw new ConflictError(
       'Kunci refund ini sudah dipakai untuk refund yang berbeda. Muat ulang halaman transaksi sebelum mengulang.',
     )
+  }
+  // Sejajar dengan checkout: kunci milik orang lain tidak dijawab dengan data.
+  // Tanpa ini, kunci yang tertebak mengembalikan nomor dan nominal refund kasir
+  // lain kepada siapa pun yang memegang PIN pemilik.
+  if (refund.createdByUserId !== actorUserId) {
+    throw new ConflictError('Kunci refund ini milik kasir lain.')
   }
 
   return {
@@ -246,18 +278,20 @@ export async function createRefund(
   requested: RefundLineInput[],
   method: string,
   reason: string,
-  idempotencyKey: string | null = null,
+  idempotencyKey: string,
   now: Date = new Date(),
 ): Promise<RefundResult> {
-  const refundMethod = RefundMethodSchema.parse(method)
-  const print = idempotencyKey
-    ? refundFingerprint(transactionId, requested, refundMethod, reason)
-    : ''
-
-  if (idempotencyKey) {
-    const replayed = await readRefundByKey(idempotencyKey, print)
-    if (replayed) return replayed
+  // Lapis kedua setelah Zod di route. Service ini adalah batas tempat uang
+  // benar-benar keluar, jadi invariannya tidak boleh bergantung pada satu route.
+  if (typeof idempotencyKey !== 'string' || idempotencyKey.trim() === '') {
+    throw new ValidationError('idempotencyKey wajib diisi untuk membuat refund')
   }
+
+  const refundMethod = RefundMethodSchema.parse(method)
+  const print = refundFingerprint(transactionId, requested, refundMethod, reason)
+
+  const replayed = await readRefundByKey(idempotencyKey, print, actor.userId)
+  if (replayed) return replayed
 
   try {
     return await refundInTransaction({
@@ -274,8 +308,8 @@ export async function createRefund(
   } catch (e) {
     // Sama seperti checkout: indeks unique di DB yang memutuskan pemenang saat
     // dua request serentak membawa kunci yang sama.
-    if (idempotencyKey && isUniqueViolation(e)) {
-      const replayed = await readRefundByKey(idempotencyKey, print)
+    if (isUniqueViolation(e)) {
+      const replayed = await readRefundByKey(idempotencyKey, print, actor.userId)
       if (replayed) return replayed
     }
     throw e
@@ -294,7 +328,7 @@ interface RefundExecution {
   requested: RefundLineInput[]
   refundMethod: RefundMethod
   reason: string
-  idempotencyKey: string | null
+  idempotencyKey: string
   print: string
   now: Date
 }
@@ -351,7 +385,7 @@ async function refundInTransaction(exec: RefundExecution): Promise<RefundResult>
         authorizedByUserId: actor.authorizedByUserId,
         createdByUserId: actor.userId,
         idempotencyKey,
-        idempotencyFingerprint: idempotencyKey ? print : null,
+        idempotencyFingerprint: print,
         items: {
           create: totals.lines.map((l) => ({
             transactionItemId: l.transactionItemId,

@@ -30,9 +30,10 @@ const CheckoutSchema = z
     method: PaymentMethodSchema,
     amountTendered: z.number().int().min(0).optional(),
     note: z.string().trim().max(500).optional(),
-    // Kunci sekali-pakai. Tanpa ini, response yang hilang di WiFi toko membuat
-    // kasir menekan Bayar dua kali dan tercatat dua penjualan (src/lib/idempotency.ts).
-    idempotencyKey: IdempotencyKeySchema.optional(),
+    // WAJIB. Response yang hilang di WiFi toko membuat kasir menekan Bayar dua
+    // kali; tanpa kunci itu tercatat sebagai dua penjualan. Perlindungannya tidak
+    // boleh bergantung pada kedisiplinan client (src/lib/idempotency.ts).
+    idempotencyKey: IdempotencyKeySchema,
   })
   .refine((v) => v.method !== 'CASH' || v.amountTendered !== undefined, {
     message: 'Nominal uang yang diterima wajib diisi untuk pembayaran tunai',
@@ -42,6 +43,14 @@ const CheckoutSchema = z
 export const POST = route('transactions.create', async (req) => {
   const session = await requireSession()
 
+  // Body di-parse LEBIH DULU, sebelum pemeriksaan bisnis apa pun.
+  //
+  // Urutan ini bagian dari kontrak: request tanpa idempotencyKey harus ditolak
+  // 400 tanpa sistem menyentuh apa pun — bukan ditolak 409 karena kebetulan
+  // shiftnya juga belum dibuka. Alasan penolakan yang salah menuntun kasir ke
+  // tindakan yang salah.
+  const body = await parseBody(req, CheckoutSchema)
+
   // Tidak ada penjualan di luar shift. Sebelum Fase 3, shift dibuka otomatis
   // dengan kas awal nol supaya Fase 2 bisa diuji — itu membuat rekonsiliasi kas
   // tidak berarti apa-apa, jadi scaffolding-nya dihapus di sini.
@@ -49,8 +58,6 @@ export const POST = route('transactions.create', async (req) => {
   if (!shift) {
     throw new ConflictError('Belum ada shift terbuka. Buka shift dulu sebelum bertransaksi.')
   }
-
-  const body = await parseBody(req, CheckoutSchema)
 
   const result = await checkout(body, {
     userId: session.id,

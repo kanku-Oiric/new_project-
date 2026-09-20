@@ -18,11 +18,16 @@ describe('canTransition — state machine pembayaran', () => {
     expect(canTransition('PENDING', 'FAILED')).toBe(true)
   })
 
-  it('state terminal tidak punya transisi keluar, tanpa pengecualian', () => {
+  it('state terminal tidak punya transisi keluar lewat jalur NORMAL', () => {
+    // Judulnya dulu berbunyi "tanpa pengecualian". Itu tidak lagi akurat: ada
+    // TEPAT SATU pengecualian, yaitu void, dan ia diuji di blok tersendiri di
+    // bawah. Yang tetap benar adalah kalimat ini — lewat jalur normal, tidak ada
+    // jalan keluar dari state terminal.
     const terminals: PaymentStatus[] = ['PAID', 'EXPIRED', 'CANCELLED', 'FAILED']
     for (const from of terminals) {
       for (const to of PAYMENT_STATUSES) {
         expect(canTransition(from, to)).toBe(false)
+        expect(canTransition(from, to, 'NORMAL')).toBe(false)
       }
     }
   })
@@ -147,5 +152,62 @@ describe('quickCashOptions', () => {
   it('nominal pas pada pecahan tidak menawarkan pecahan itu lagi', () => {
     const opts = quickCashOptions(50_000)
     expect(opts.filter((o) => o.value === 50_000)).toHaveLength(1)
+  })
+})
+
+describe('canTransition via VOID — satu-satunya pengecualian', () => {
+  it('PAID → CANCELLED SAH lewat void', () => {
+    // Void adalah operasi bisnis: pemilik memberi PIN, stok dikembalikan,
+    // semuanya dalam satu DB transaction, dan uang QRIS tetap di rekening
+    // sebagai kewajiban yang dilacak dashboard. Sebelum perbaikan ini, transisi
+    // itu tetap terjadi — hanya saja lewat updateMany yang tidak pernah
+    // bertanya kepada state machine.
+    expect(canTransition('PAID', 'CANCELLED', 'VOID')).toBe(true)
+  })
+
+  it('PAID → CANCELLED TETAP ditolak di luar void', () => {
+    expect(canTransition('PAID', 'CANCELLED')).toBe(false)
+    expect(canTransition('PAID', 'CANCELLED', 'NORMAL')).toBe(false)
+  })
+
+  it('void TIDAK membuka transisi terminal lain', () => {
+    // Pengecualiannya satu baris, bukan pintu terbuka. Void atas transaksi yang
+    // pembayarannya kedaluwarsa atau gagal tidak boleh menulis ulang sejarahnya.
+    const dilarang: [PaymentStatus, PaymentStatus][] = [
+      ['EXPIRED', 'CANCELLED'],
+      ['FAILED', 'CANCELLED'],
+      ['CANCELLED', 'CANCELLED'],
+      ['CANCELLED', 'PAID'],
+      ['PAID', 'EXPIRED'],
+      ['PAID', 'FAILED'],
+      ['PAID', 'PENDING'],
+      ['CANCELLED', 'PENDING'],
+    ]
+    for (const [from, to] of dilarang) {
+      expect(canTransition(from, to, 'VOID'), `${from} → ${to} via VOID`).toBe(false)
+    }
+  })
+
+  it('PENDING → CANCELLED tetap sah lewat void (transaksi belum dibayar)', () => {
+    expect(canTransition('PENDING', 'CANCELLED', 'VOID')).toBe(true)
+  })
+
+  it('lewat VOID hanya menambah TEPAT SATU kombinasi yang sah', () => {
+    let normal = 0
+    let viaVoid = 0
+    for (const from of PAYMENT_STATUSES) {
+      for (const to of PAYMENT_STATUSES) {
+        if (canTransition(from, to)) normal++
+        if (canTransition(from, to, 'VOID')) viaVoid++
+      }
+    }
+    expect(normal).toBe(4)
+    expect(viaVoid).toBe(5)
+  })
+
+  it('assertTransition menghormati konteksnya', () => {
+    expect(() => assertTransition('PAID', 'CANCELLED')).toThrow(PaymentError)
+    expect(() => assertTransition('PAID', 'CANCELLED', 'VOID')).not.toThrow()
+    expect(() => assertTransition('EXPIRED', 'CANCELLED', 'VOID')).toThrow(PaymentError)
   })
 })

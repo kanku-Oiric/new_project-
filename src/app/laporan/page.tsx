@@ -100,8 +100,14 @@ export default async function LaporanPage({
                   {section.label}
                 </h3>
                 <dl className="mt-1 divide-y divide-kasir-border">
-                  {section.rows.map((r) => (
-                    <div key={`${section.label}-${r.label}`} className="flex justify-between py-1.5">
+                  {/* Key memakai posisi, bukan isi. Label adalah DATA — dua baris
+                      boleh berjudul sama (dua shift kasir yang sama dalam sepekan),
+                      dan identitas baris tidak boleh bergantung pada itu. */}
+                  {section.rows.map((r, i) => (
+                    <div
+                      key={`${section.label}-${i}-${r.label}`}
+                      className="flex justify-between py-1.5"
+                    >
                       <dt
                         className={`text-sm ${
                           r.emphasis ? 'font-medium text-kasir-text' : 'text-kasir-muted'

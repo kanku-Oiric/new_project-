@@ -16,6 +16,38 @@ const boolString = z
   .transform((v) => v === 'true')
   .pipe(z.boolean())
 
+/**
+ * Daftar string yang tersimpan sebagai JSON.
+ *
+ * `ctx.addIssue` + `z.NEVER`, BUKAN `throw`. Bedanya menentukan apakah halaman
+ * hidup atau 500:
+ *
+ *   `safeParse` milik Zod TIDAK menangkap exception yang dilempar dari dalam
+ *   `.transform()`. Versi sebelumnya memanggil `JSON.parse(v)` langsung di sana,
+ *   sehingga satu baris setting yang kosong membuat `getSetting` MELEMPAR —
+ *   padahal seluruh gunanya `safeParse` di sana adalah supaya nilai rusak jatuh
+ *   ke default.
+ *
+ * Ketahuan dari log server saat pemeriksaan manual:
+ *   `SyntaxError: Unexpected end of JSON input ... GET /pengaturan 500`.
+ */
+const jsonStringArray = z.string().transform((v, ctx) => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(v)
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'bukan JSON yang sah' })
+    return z.NEVER
+  }
+
+  const arr = z.array(z.string()).safeParse(parsed)
+  if (!arr.success) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'harus berupa array of string' })
+    return z.NEVER
+  }
+  return arr.data
+})
+
 export const SETTING_DEFS = {
   storeName: { schema: z.string().min(1), default: 'Toko Saya', secret: false },
   storeAddress: { schema: z.string(), default: '', secret: false },
@@ -41,7 +73,30 @@ export const SETTING_DEFS = {
 
   discordWebhookUrl: { schema: z.string(), default: '', secret: true },
   telegramBotToken: { schema: z.string(), default: '', secret: true },
-  telegramChatId: { schema: z.string(), default: '', secret: false },
+  /**
+   * Chat id Telegram — dua bentuk yang diterima Telegram, dan hanya dua.
+   *
+   *   -1001234567890   id numerik (grup/channel selalu negatif, personal positif)
+   *   @namachannel     username publik, dan bot HARUS sudah menjadi anggota
+   *
+   * Divalidasi di sini karena kesalahan yang paling sering terjadi hanya terlihat
+   * SAAT pengiriman gagal: Telegram menjawab `chat not found` untuk username yang
+   * tidak publik, tidak ada, atau belum dimasuki bot — dan pesan itu baru muncul
+   * berjam-jam kemudian saat laporan otomatis dikirim.
+   */
+  telegramChatId: {
+    schema: z.union([
+      z.literal(''),
+      z
+        .string()
+        .regex(
+          /^(-?\d{5,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/,
+          'Chat id harus berupa angka (mis. -1001234567890) atau @namachannel publik yang botnya sudah menjadi anggota',
+        ),
+    ]),
+    default: '',
+    secret: false,
+  },
 
   reportDailyTime: { schema: z.string().regex(/^\d{2}:\d{2}$/), default: '21:00', secret: false },
   reportWeeklyDay: { schema: z.coerce.number().int().min(1).max(7), default: '1', secret: false },
@@ -54,7 +109,7 @@ export const SETTING_DEFS = {
 
   lowStockAlert: { schema: boolString, default: 'true', secret: false },
   expenseCategories: {
-    schema: z.string().transform((v) => z.array(z.string()).parse(JSON.parse(v))),
+    schema: jsonStringArray,
     default: JSON.stringify(['Operasional', 'Listrik', 'Sewa', 'Gaji', 'Lain-lain']),
     secret: false,
   },
@@ -80,8 +135,22 @@ export async function getSetting<K extends SettingKey>(
   const def = SETTING_DEFS[key]
   const row = await db.setting.findUnique({ where: { key } })
   const raw = row?.value ?? def.default
-  const parsed = def.schema.safeParse(raw)
-  if (parsed.success) return parsed.data as SettingValue<K>
+
+  // try/catch, bukan hanya safeParse.
+  //
+  // Lapis kedua: `safeParse` Zod tidak menangkap exception dari dalam
+  // `.transform()`, jadi skema yang melempar akan melewati jaring ini tanpa
+  // terlihat. Skema `expenseCategories` pernah begitu dan menjatuhkan
+  // /pengaturan dengan 500. Skema-skemanya sudah diperbaiki agar tidak melempar,
+  // tapi jaring ini tetap dipasang: satu baris setting cacat tidak boleh pernah
+  // menghentikan toko berjualan, apa pun bentuk cacatnya.
+  try {
+    const parsed = def.schema.safeParse(raw)
+    if (parsed.success) return parsed.data as SettingValue<K>
+  } catch {
+    // Jatuh ke default di bawah.
+  }
+
   return def.schema.parse(def.default) as SettingValue<K>
 }
 
