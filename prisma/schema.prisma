@@ -109,6 +109,19 @@ model StockMovement {
   businessDate String
   createdAt    DateTime @default(now())
 
+  // Kunci sekali-pakai untuk barang masuk dan penyesuaian stok manual.
+  //
+  // Diletakkan di SINI, bukan di tabel baru: satu barang masuk menghasilkan tepat
+  // satu baris pergerakan stok, jadi baris inilah identitas operasinya. Menyimpan
+  // kuncinya di tempat lain berarti ada dua sumber kebenaran tentang apakah
+  // operasi itu sudah terjadi.
+  //
+  // Pergerakan dari penjualan (reason SALE) tidak mengisinya — pengulangan
+  // checkout sudah dijaga kunci di tabel transactions, dan menjaganya dua kali
+  // hanya akan membuat kegagalan pertama tampak seperti kegagalan kedua.
+  idempotencyKey         String? @unique
+  idempotencyFingerprint String?
+
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@index([productId, createdAt])
@@ -305,6 +318,12 @@ model Expense {
   createdAt       DateTime  @default(now())
   deletedAt       DateTime? // soft delete
   deletedByUserId String?
+
+  // Kunci sekali-pakai. Pengeluaran kas adalah uang yang benar-benar keluar dari
+  // laci, jadi pengulangan yang tidak tertahan langsung membuat expected cash
+  // shift itu salah dan kasirnya tampak kehilangan uang.
+  idempotencyKey         String? @unique
+  idempotencyFingerprint String?
 
   shift Shift @relation(fields: [shiftId], references: [id], onDelete: Restrict)
 

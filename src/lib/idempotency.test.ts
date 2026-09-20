@@ -126,4 +126,54 @@ describe('penjaga struktural', () => {
     telusuri(path.join(process.cwd(), 'src'))
     expect(pelanggaran).toEqual([])
   })
+
+  /** Fungsi service yang efeknya finansial atau inventori. */
+  const PENULIS = ['checkout(', 'createRefund(', 'createExpense(', 'stockIn(', 'adjustStock(']
+
+  function routeFiles(): { file: string; text: string }[] {
+    const out: { file: string; text: string }[] = []
+    const telusuri = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) telusuri(full)
+        else if (entry.name === 'route.ts') out.push({ file: full, text: fs.readFileSync(full, 'utf8') })
+      }
+    }
+    telusuri(path.join(process.cwd(), 'src', 'app', 'api'))
+    return out
+  }
+
+  it('setiap route yang memanggil penulis uang/stok WAJIB memakai IdempotencyKeySchema', () => {
+    // Diturunkan dari KODE, bukan dari daftar path yang ditulis tangan. Route baru
+    // yang memanggil salah satu penulis di atas langsung ikut terjaga — dan itulah
+    // bentuk kelalaian yang benar-benar terjadi: tiga endpoint (expenses, stock-in,
+    // stock-adjustment) berjalan berbulan-bulan tanpa kunci sementara checkout dan
+    // refund sudah punya, karena tidak ada satu pun pemeriksaan yang menanyakannya.
+    const pelanggaran = routeFiles()
+      .filter(({ text }) => PENULIS.some((fn) => text.includes(fn)))
+      .filter(({ text }) => !text.includes('IdempotencyKeySchema'))
+      .map(({ file }) => path.relative(process.cwd(), file).split(path.sep).join('/'))
+
+    expect(pelanggaran).toEqual([])
+  })
+
+  it('setiap service penulis uang/stok menolak kunci kosong dengan sendirinya', () => {
+    // Lapis kedua. Route bisa dilewati: webhook provider dinamis nanti, script
+    // pemeliharaan, atau pemanggilan dari server action. Invariannya tidak boleh
+    // bergantung pada satu route saja, jadi setiap service membawa penolakannya
+    // sendiri.
+    const WAJIB = [
+      'src/lib/checkout/index.ts',
+      'src/lib/transaction/service.ts',
+      'src/lib/expense/service.ts',
+      'src/lib/product/service.ts',
+    ]
+
+    const pelanggaran = WAJIB.filter((file) => {
+      const isi = fs.readFileSync(path.join(process.cwd(), file), 'utf8')
+      return !isi.includes('idempotencyKey wajib diisi')
+    })
+
+    expect(pelanggaran).toEqual([])
+  })
 })

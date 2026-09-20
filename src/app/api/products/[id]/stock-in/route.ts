@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { clientIp, deviceLabel, ok, parseBody, route } from '@/lib/api'
 import { requireRole } from '@/lib/auth/session'
+import { IdempotencyKeySchema } from '@/lib/idempotency'
 import { stockIn } from '@/lib/product/service'
 
 export const dynamic = 'force-dynamic'
@@ -9,6 +10,9 @@ const StockInSchema = z.object({
   qty: z.number().int().min(1).max(1_000_000),
   hargaBeli: z.number().int().min(0).max(2_147_483_647).optional(),
   note: z.string().trim().max(300).optional(),
+  // WAJIB. Barang masuk yang tercatat dua kali menaikkan stok dua kali, dan
+  // selisihnya baru ketahuan saat hitung fisik berikutnya (src/lib/idempotency.ts).
+  idempotencyKey: IdempotencyKeySchema,
 })
 
 export const POST = route(
@@ -22,10 +26,9 @@ export const POST = route(
     const result = await stockIn(
       { userId: session.id, role: session.role, ip: clientIp(req), deviceLabel: deviceLabel(req) },
       id,
-      body.qty,
-      body.hargaBeli,
-      body.note,
+      body,
     )
-    return ok(result, 201)
+    // 200 untuk pengulangan: tidak ada barang kedua yang masuk.
+    return ok(result, result.replayed ? 200 : 201)
   },
 )

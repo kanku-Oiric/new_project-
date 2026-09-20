@@ -20,6 +20,17 @@ export interface StockMovementInput {
   refType?: StockRefType
   refId?: string
   note?: string
+  /**
+   * Kunci sekali-pakai, HANYA untuk pergerakan yang dipicu request tersendiri:
+   * barang masuk dan penyesuaian stok manual. Baris inilah identitas operasinya,
+   * dan kolomnya unique di database.
+   *
+   * Penjualan mengosongkannya dengan sengaja. Pengulangan checkout sudah dijaga
+   * kunci di tabel `transactions`, dan satu checkout bisa menghasilkan banyak
+   * baris pergerakan — satu kunci tidak bisa menjaga semuanya.
+   */
+  idempotencyKey?: string
+  idempotencyFingerprint?: string
 }
 
 export interface StockMovementResult {
@@ -84,6 +95,8 @@ export async function applyStockMovement(
       userId: input.userId,
       note: input.note ?? null,
       businessDate: input.businessDate,
+      idempotencyKey: input.idempotencyKey ?? null,
+      idempotencyFingerprint: input.idempotencyFingerprint ?? null,
     },
   })
 

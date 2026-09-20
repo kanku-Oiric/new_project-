@@ -36,6 +36,7 @@ export type StockRefType = z.infer<typeof StockRefTypeSchema>
 /** Alasan yang boleh dipilih manusia lewat form penyesuaian stok. */
 export const MANUAL_STOCK_REASONS = ['ADJUSTMENT', 'OPNAME'] as const
 export const ManualStockReasonSchema = z.enum(MANUAL_STOCK_REASONS)
+export type ManualStockReason = z.infer<typeof ManualStockReasonSchema>
 
 // ─────────────────────────────── SHIFT ───────────────────────────────
 

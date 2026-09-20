@@ -161,6 +161,11 @@ model StockMovement {
   businessDate String
   createdAt    DateTime @default(now())
 
+  // Kunci sekali-pakai untuk barang masuk & penyesuaian stok manual (architecture.md §19a.1).
+  // Pergerakan dari penjualan (reason SALE) mengosongkannya.
+  idempotencyKey         String? @unique
+  idempotencyFingerprint String?
+
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@index([productId, createdAt])
@@ -350,6 +355,11 @@ model Expense {
   createdAt       DateTime  @default(now())
   deletedAt       DateTime?                          // soft delete
   deletedByUserId String?
+
+  // Kunci sekali-pakai (architecture.md §19a.1). Pengeluaran yang tercatat dua
+  // kali menurunkan expected cash dua kali.
+  idempotencyKey         String? @unique
+  idempotencyFingerprint String?
 
   shift Shift @relation(fields: [shiftId], references: [id], onDelete: Restrict)
 
@@ -546,8 +556,15 @@ Semua nilai disimpan sebagai `String`, di-parse per key lewat Zod di `lib/settin
 
 | Migration | Isi |
 |---|---|
-| `0001_init` | Seluruh 16 tabel di §3 |
+| `20260918122320_init` | Seluruh 16 tabel di §3 |
+| `20260920000000_add_idempotency_key` | `idempotencyKey` + `idempotencyFingerprint` di `transactions` dan `refunds` |
+| `20260920120000_idempotency_expense_stock` | Kolom yang sama di `expenses` dan `stock_movements` |
 | — | PRAGMA **bukan** migration; dijalankan per koneksi saat startup (`architecture.md` §6.1) |
+
+Ketiga migration idempotency bersifat **aditif**: kolomnya nullable dan tidak ada
+backfill, jadi baris lama tetap sah. Yang perlu diperhatikan saat menerapkannya ke
+database toko: `prisma migrate deploy` butuh kunci tulis eksklusif dan menjawab
+`database is locked` selama server masih hidup, jadi hentikan server lebih dulu.
 
 Seluruh schema dibuat dalam satu migration awal karena belum ada data produksi. Setelah toko mulai memakai, setiap perubahan schema jadi migration incremental tersendiri — dan wajib diuji terhadap **salinan backup asli**, bukan cuma DB kosong.
 

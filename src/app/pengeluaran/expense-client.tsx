@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react'
 import Link from 'next/link'
 import { getJson, outcomeMessage, postJson } from '@/lib/api-client'
 import { formatRupiah, parseRupiah } from '@/lib/money'
+import { useIdempotencyKey } from '@/lib/use-idempotency-key'
 import { OwnerPinDialog } from '@/components/ui/owner-pin-dialog'
 
 export interface ExpenseRow {
@@ -33,6 +34,11 @@ export function ExpenseClient({
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<ExpenseRow | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  // Kunci sekali-pakai, berganti sendiri begitu isi formnya berubah. Tanpa ini,
+  // menekan "Catat pengeluaran" dua kali karena response-nya tidak kembali akan
+  // mencatat uang keluar dua kali (src/lib/idempotency.ts).
+  const keyFor = useIdempotencyKey()
 
   const amount = (() => {
     try {
@@ -144,12 +150,26 @@ export function ExpenseClient({
           onClick={async () => {
             setBusy(true)
             setError(null)
-            const outcome = await postJson('/api/expenses', {
+            const payload = {
               kategori,
               amount,
               note: note.trim() || undefined,
               paidFrom,
-            })
+            }
+
+            const idempotencyKey = keyFor(payload)
+            if (idempotencyKey === null) {
+              // Server MEWAJIBKAN kunci; mengirim tanpa kunci hanya menghasilkan
+              // 400 berisi pesan teknis. Lebih jujur menyebut sebabnya di sini.
+              setError(
+                'Browser ini tidak bisa membuat kode pengaman, jadi pengeluaran tidak bisa dicatat. ' +
+                  'Gunakan browser lain (Chrome/Firefox versi baru) di perangkat ini.',
+              )
+              setBusy(false)
+              return
+            }
+
+            const outcome = await postJson('/api/expenses', { ...payload, idempotencyKey })
             setBusy(false)
             if (outcome.kind !== 'ok') {
               setError(outcomeMessage(outcome, true))

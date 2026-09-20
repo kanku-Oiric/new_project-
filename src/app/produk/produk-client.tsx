@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { outcomeMessage, postJson } from '@/lib/api-client'
 import { formatRupiah, parseRupiah } from '@/lib/money'
+import { useIdempotencyKey } from '@/lib/use-idempotency-key'
 
 export interface ProdukRow {
   id: string
@@ -113,6 +114,10 @@ function StockInDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Kunci sekali-pakai: barang masuk yang terkirim dua kali menaikkan stok dua
+  // kali, dan selisihnya baru ketahuan saat hitung fisik berikutnya.
+  const keyFor = useIdempotencyKey()
+
   const qty = Number(qtyText) || 0
   const hargaBeli = (() => {
     if (hargaText.trim() === '') return undefined
@@ -201,10 +206,25 @@ function StockInDialog({
             onClick={async () => {
               setBusy(true)
               setError(null)
-              const outcome = await postJson(`/api/products/${product.id}/stock-in`, {
+              const payload = {
                 qty,
                 ...(hargaBeli === undefined ? {} : { hargaBeli }),
                 note: note.trim() || undefined,
+              }
+
+              const idempotencyKey = keyFor(payload)
+              if (idempotencyKey === null) {
+                setError(
+                  'Browser ini tidak bisa membuat kode pengaman, jadi barang masuk tidak bisa dicatat. ' +
+                    'Gunakan browser lain (Chrome/Firefox versi baru) di perangkat ini.',
+                )
+                setBusy(false)
+                return
+              }
+
+              const outcome = await postJson(`/api/products/${product.id}/stock-in`, {
+                ...payload,
+                idempotencyKey,
               })
               setBusy(false)
               if (outcome.kind !== 'ok') {

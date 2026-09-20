@@ -939,9 +939,17 @@ kekhawatiran.
 |---|---|---|
 | `POST /api/transactions` | **wajib** | Zod di route + `checkout()` melempar `ValidationError` |
 | `POST /api/transactions/:id/refunds` | **wajib** | Zod di route + `createRefund()` melempar `ValidationError` |
-| `POST /api/expenses` | **belum** | — lihat §19a.3 |
-| `POST /api/products/:id/stock-in` | **belum** | — lihat §19a.3 |
-| `POST /api/products/:id/stock-adjustment` | **belum** | — lihat §19a.3 |
+| `POST /api/expenses` | **wajib** | Zod di route + `createExpense()` melempar `ValidationError` |
+| `POST /api/products/:id/stock-in` | **wajib** | Zod di route + `stockIn()` melempar `ValidationError` |
+| `POST /api/products/:id/stock-adjustment` | **wajib** | Zod di route + `adjustStock()` melempar `ValidationError` |
+
+Kelima baris itu bukan daftar yang dirawat tangan. `src/lib/idempotency.test.ts`
+memindai seluruh `src/app/api/**/route.ts`: route yang memanggil `checkout`,
+`createRefund`, `createExpense`, `stockIn`, atau `adjustStock` **wajib** memuat
+`IdempotencyKeySchema`, dan keempat service itu wajib membawa penolakan kunci
+kosongnya sendiri. Penjaga ini lahir dari bentuk kelalaian yang benar-benar
+terjadi: tiga endpoint berjalan tanpa kunci sementara dua lainnya sudah punya,
+karena tidak ada satu pun pemeriksaan yang menanyakannya.
 
 Perilaku yang dijamin, seluruhnya diuji di `tests/idempotency.test.ts`:
 
@@ -961,9 +969,26 @@ kunci dijawab `400 kunci wajib`, bukan `409 belum ada shift` — dua pesan itu
 menuntun kasir ke dua tindakan yang berbeda.
 
 Penyimpanan kuncinya menempel pada baris entitasnya sendiri
-(`transactions.idempotencyKey`, `refunds.idempotencyKey`), nullable + `@unique`.
-Tidak ada tabel idempotency terpisah, dan tidak ada masa kedaluwarsa: kunci
-hidup selama barisnya hidup.
+(`transactions.idempotencyKey`, `refunds.idempotencyKey`,
+`expenses.idempotencyKey`, `stock_movements.idempotencyKey`), nullable +
+`@unique`. Tidak ada tabel idempotency terpisah, dan tidak ada masa kedaluwarsa:
+kunci hidup selama barisnya hidup.
+
+Barang masuk dan penyesuaian stok **berbagi satu kolom kunci** di
+`stock_movements`, karena keduanya menghasilkan tepat satu baris pergerakan dan
+baris itulah identitas operasinya. Sidik jarinya diberi pembeda `kind`
+(`STOCK_IN` / `STOCK_ADJUSTMENT`) supaya satu kunci tidak bisa dipakai untuk
+barang masuk lalu dijawab dengan penyesuaian yang kebetulan angkanya sama.
+Pergerakan dari penjualan (`reason = SALE`) mengosongkan kolom itu: pengulangan
+checkout sudah dijaga kunci di `transactions`, dan satu checkout bisa
+menghasilkan banyak baris pergerakan yang tidak mungkin dijaga satu kunci.
+
+Satu keputusan yang paling mudah salah: sidik jari penyesuaian stok memakai
+**angka mentah dari client** (`newQty` / `qtyChange`), bukan selisih hasil
+hitungannya. `newQty` dikonversi menjadi selisih terhadap stok *saat itu*, jadi
+sidik jari yang memakai hasil konversi akan berubah setiap kali stok bergerak —
+dan pengulangan yang sah dijawab `409 kunci dipakai untuk isi berbeda`. Diuji di
+`tests/idempotency.test.ts` nomor 35.
 
 ### 19a.2 Invarian state machine pembayaran
 
@@ -1000,18 +1025,39 @@ KECUALI satu-satunya jalur yang melanggarnya, dan pembayaran `EXPIRED` ikut
 ditimpa menjadi `CANCELLED`. Ditutup oleh `tests/void-transition.test.ts` dan
 dijaga bentuknya oleh `src/lib/payment/no-auto-success.test.ts`.
 
-### 19a.3 Yang BELUM ditutup, dan kenapa
+### 19a.3 Tiga endpoint terakhir: kenapa penutupannya tertunda
 
 `POST /api/expenses`, `POST /api/products/:id/stock-in`, dan
-`POST /api/products/:id/stock-adjustment` (mode `qtyChange`) masih bisa
-menggandakan efeknya kalau request diulang.
+`POST /api/products/:id/stock-adjustment` berjalan tanpa kunci lebih lama
+daripada checkout dan refund. Penyebabnya bukan kelalaian desain, melainkan
+penyimpanan: `Expense` dan `StockMovement` **tidak punya satu pun kolom
+`@unique`** yang bisa menampung kunci, jadi menutupnya menuntut migrasi schema
+(`20260920120000_idempotency_expense_stock`) plus `prisma generate` — dan
+regenerasi client membuat proses server yang sedang berjalan memakai client lama
+terhadap kode baru. Pekerjaannya ditunda ke jendela restart, bukan dikerjakan
+diam-diam di belakang server yang sedang dipakai.
 
-Penyebabnya bukan kelalaian desain, melainkan penyimpanan: `Expense` dan
-`StockMovement` **tidak punya satu pun kolom `@unique`** yang bisa menampung
-kunci, jadi menutupnya menuntut migrasi schema plus `prisma generate`.
-Regenerasi client membuat proses server yang sedang berjalan memakai client lama
-terhadap kode baru. Pekerjaannya ditunda sampai ada jendela restart, bukan
-dikerjakan diam-diam.
+Akibat yang ditutup, urut dari yang paling tidak terlihat:
+
+| Endpoint | Kalau diulang tanpa kunci |
+|---|---|
+| `POST /api/expenses` | Expected cash shift turun **dua kali**. Laci tampak kurang, dan yang dicurigai adalah kasirnya — bukan sistemnya |
+| `POST /api/products/:id/stock-in` | Stok naik dua kali. Selisihnya baru ketahuan saat hitung fisik berikutnya, berminggu-minggu kemudian |
+| `POST /api/products/:id/stock-adjustment` | Koreksi berlaku dua kali, menggeser stok dua kali menjauh dari hitungan fisik yang baru saja dilakukan |
+
+Ketiganya sekarang diuji dengan matriks A–E yang sama persis seperti checkout dan
+refund (`tests/idempotency.test.ts` nomor 13–35), bukan versi yang lebih longgar.
+
+> **Setelah menarik perubahan ini, database toko wajib dimigrasi.** Hentikan
+> server lebih dulu — `prisma migrate deploy` butuh kunci tulis eksklusif dan
+> akan menjawab `database is locked` selama server masih hidup:
+>
+> ```
+> npm run db:deploy
+> ```
+>
+> Tanpa migrasi itu, ketiga endpoint di atas menjawab error karena kolom
+> `idempotencyKey` belum ada.
 
 ---
 
@@ -1061,6 +1107,9 @@ Sama seperti pelunasan pembayaran (§9.1), ada dua lapis dan lapis keduanya ada 
 |---|---|
 | `POST /api/transactions` | **Kunci sekali-pakai.** Ini jalur yang paling sering diulang |
 | `POST /api/transactions/:id/refunds` | **Kunci sekali-pakai.** Refund *sebagian* yang diulang lolos guard kumulatif (1 dari 4, lalu 1 dari 4 lagi = 2 terkembalikan) |
+| `POST /api/expenses` | **Kunci sekali-pakai.** Uang yang benar-benar keluar dari laci; pengulangan membuat expected cash salah dan kasirnya tampak kehilangan uang |
+| `POST /api/products/:id/stock-in` | **Kunci sekali-pakai.** Pengulangan menaikkan stok dua kali, dan selisihnya baru ketahuan saat hitung fisik |
+| `POST /api/products/:id/stock-adjustment` | **Kunci sekali-pakai.** Pengulangan menerapkan koreksi yang sama dua kali |
 | `POST /api/payments/:id/confirm` | Sudah aman: `updateMany where status='PENDING'` + `count === 1` (§9.1). Pengulangan menemukan baris yang sudah `PAID` dan ditolak |
 | `POST /api/transactions/:id/void` | Sudah aman: status transaksi dijaga, `VOIDED` tidak bisa di-void lagi |
 | `POST /api/shifts/open` | Sudah aman: `openKey @unique` per kasir |

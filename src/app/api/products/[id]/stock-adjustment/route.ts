@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { clientIp, deviceLabel, ok, parseBody, route } from '@/lib/api'
 import { requireRole } from '@/lib/auth/session'
 import { ManualStockReasonSchema } from '@/lib/enums'
+import { IdempotencyKeySchema } from '@/lib/idempotency'
 import { adjustStock } from '@/lib/product/service'
 
 export const dynamic = 'force-dynamic'
@@ -12,6 +13,9 @@ const AdjustSchema = z
     qtyChange: z.number().int().min(-1_000_000).max(1_000_000).optional(),
     reason: ManualStockReasonSchema,
     note: z.string().trim().max(300).optional(),
+    // WAJIB. Penyesuaian yang berlaku dua kali menggeser stok dua kali menjauh
+    // dari hitungan fisik yang baru saja dilakukan (src/lib/idempotency.ts).
+    idempotencyKey: IdempotencyKeySchema,
   })
   .refine((v) => v.newQty !== undefined || v.qtyChange !== undefined, {
     message: 'Isi jumlah baru atau selisihnya',
@@ -30,6 +34,7 @@ export const POST = route(
       id,
       body,
     )
-    return ok(result, 201)
+    // 200 untuk pengulangan: koreksinya tidak berlaku dua kali.
+    return ok(result, result.replayed ? 200 : 201)
   },
 )

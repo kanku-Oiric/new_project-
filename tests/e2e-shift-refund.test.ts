@@ -75,7 +75,9 @@ const PREFIX_KUNCI = '77777777-7777-4777-8777'
 /**
  * Kunci sekali-pakai untuk request uji.
  *
- * `idempotencyKey` sekarang WAJIB di `/api/transactions` dan `/refunds`. Test di
+ * `idempotencyKey` sekarang WAJIB di setiap endpoint yang memindahkan uang atau
+ * stok: `/api/transactions`, `/refunds`, `/api/expenses`, `/stock-in`, dan
+ * `/stock-adjustment`. Test di
  * berkas ini menguji alur bisnis, bukan aturan kuncinya, jadi kuncinya diisi
  * otomatis di sini — kecuali kalau test-nya menyebutkan sendiri.
  *
@@ -91,7 +93,13 @@ function kunciUji(): string {
 
 /** Endpoint yang mewajibkan kunci. */
 function butuhKunci(pathname: string): boolean {
-  return pathname === '/api/transactions' || pathname.endsWith('/refunds')
+  return (
+    pathname === '/api/transactions' ||
+    pathname === '/api/expenses' ||
+    pathname.endsWith('/refunds') ||
+    pathname.endsWith('/stock-in') ||
+    pathname.endsWith('/stock-adjustment')
+  )
 }
 
 function denganKunci(pathname: string, body: unknown): unknown {
